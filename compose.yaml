@@ -15,6 +15,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init:/docker-entrypoint-initdb.d:ro
+      # 迁移文件由容器直接按 UTF-8 读取，避免 Windows PowerShell 管道破坏中文。
+      - ./database/migrations:/migrations:ro
     healthcheck:
       test:
         - CMD-SHELL

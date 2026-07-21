@@ -11,7 +11,10 @@ celery_app = Celery(
     "intelligent_approval_platform",
     broker=settings.redis_url,
     backend=settings.celery_result_backend,
-    include=["app.modules.vectorization.tasks"],
+    include=[
+        "app.modules.vectorization.tasks",
+        "app.modules.risk_review.tasks",
+    ],
 )
 
 celery_app.conf.update(

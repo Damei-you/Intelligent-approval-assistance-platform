@@ -31,6 +31,9 @@
 | POST | `/api/v1/policies/imports/json` | `application/json` | 直接提交结构化制度章节 |
 | GET | `/api/v1/policies/imports/{document_id}` | - | 查询制度导入详情 |
 | GET | `/api/v1/policies/imports/{document_id}/vectorization` | - | 查询制度向量化进度 |
+| GET | `/api/v1/risk-reviews/contracts` | - | 查询可选择的当前合同版本 |
+| POST | `/api/v1/risk-reviews` | `application/json` | 创建四项异步风险审查 |
+| GET | `/api/v1/risk-reviews/{review_run_id}` | - | 查询审查进度、结论和证据 |
 
 解析预览使用 HTTP `200 OK`，且 `persisted` 固定为 `false`。确认导入使用 HTTP `201 Created`。重复导入同一个 `contract_no` 时，不创建新合同，而是创建新的合同文档修订版本，并将该版本设为当前版本。
 
@@ -253,3 +256,49 @@ docker compose up -d postgres redis
 - Swagger UI：`http://127.0.0.1:8000/docs`
 - OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
 - 健康检查：`http://127.0.0.1:8000/health`
+
+## 10. 风险审查智能体
+
+风险审查固定执行付款、质保、违约责任和争议解决四项检查。LangGraph 在加载合同上下文后并行扇出四个检查节点，等待四项全部结束后再执行汇总。每项检查完成以下步骤：
+
+1. 只在当前合同文档中检索最多 3 条合同证据。
+2. 只在当前有效制度中检索最多 5 条制度证据。
+3. 使用 `qwen-plus`（可通过 `REVIEW_MODEL` 修改）输出结构化结论。
+4. 校验模型返回的 `C1/P1` 引用标签，并从数据库回查引用原文。
+5. 保存风险项、证据、检索记录、模型调用记录和节点执行记录。
+
+合同和制度章节必须先完成向量化。聊天模型和向量模型共用 `api-key` 环境变量与百炼兼容地址。
+
+### 创建审查
+
+```http
+POST /api/v1/risk-reviews
+Content-Type: application/json
+
+{
+  "contract_id": "2e2ad8e6-c315-45c2-90ff-f0e04fcdfef3"
+}
+```
+
+成功返回 HTTP `202 Accepted`：
+
+```json
+{
+  "review_run_id": "02ec19a2-f138-4dac-b1b8-c61c8bb835ac",
+  "job_id": "c483e8e1-c063-47c2-8493-e39d5734dcdc",
+  "celery_task_id": "3311c8df-9eb6-4af4-a808-f8af812c0cf4",
+  "status": "QUEUED",
+  "message": "风险审查任务已进入队列。"
+}
+```
+
+前端每 1.5 秒查询 `/api/v1/risk-reviews/{review_run_id}`。任务完成后响应包含总体风险、审批建议、四项检查结论及每项合同/制度证据。
+
+### 已有数据库迁移
+
+新建数据卷会由 `database/init/002_seed.sql` 初始化四项检查。已有演示数据库需要执行：
+
+```powershell
+docker compose up -d postgres
+docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/003_risk_review_agent.sql
+```

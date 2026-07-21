@@ -188,6 +188,11 @@ footer div { display: flex; align-items: center; gap: 7px; }
 footer i { width: 6px; height: 6px; display: inline-block; border-radius: 50%; background: var(--green); }
 footer b { color: #b1b8b3; font-weight: 400; }
 
+.product-nav { align-self: stretch; margin-left: 24px; display: flex; align-items: center; gap: 3px; }
+.product-nav button { height: 100%; padding: 0 14px; border: 0; border-bottom: 2px solid transparent; color: #758079; background: transparent; font-size: 10px; font-weight: 700; }
+.product-nav button:hover { color: var(--navy); }
+.product-nav button.active { color: var(--green); border-bottom-color: var(--green); }
+
 @media (max-width: 980px) {
   .hero-row { align-items: flex-start; flex-direction: column; }
   .hero-metrics { min-width: 0; width: 100%; }
@@ -199,6 +204,7 @@ footer b { color: #b1b8b3; font-weight: 400; }
 @media (max-width: 680px) {
   .topbar { padding: 0 18px; }
   .brand-product, .brand-divider, .demo-badge { display: none; }
+  .product-nav { margin-left: auto; }.product-nav button { padding: 0 8px; font-size: 9px; }
   .api-status { padding: 7px; }
   .api-status span:last-child { display: none; }
   main, footer { width: min(100% - 24px, 1360px); }

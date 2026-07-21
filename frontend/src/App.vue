@@ -37,6 +37,7 @@ import {
   previewContractFile,
   previewPolicyFile,
 } from './api/contracts'
+import RiskReviewPanel from './components/RiskReviewPanel.vue'
 
 const contractSampleJson = `{
   "contract_no": "CG-2026-001",
@@ -80,6 +81,7 @@ const policySampleJson = `{
 }`
 
 const resourceType = ref('contract')
+const appSection = ref('imports')
 const activeMode = ref('file')
 const selectedFile = ref(null)
 const isDragging = ref(false)
@@ -193,6 +195,12 @@ function switchResource(type) {
   preview.value = null
   previewJson.value = ''
   if (fileInput.value) fileInput.value.value = ''
+}
+
+function switchAppSection(section) {
+  if (appSection.value === section) return
+  stopVectorizationPolling()
+  appSection.value = section
 }
 
 function switchMode(mode) {
@@ -393,6 +401,10 @@ function formatBytes(size) {
         <span class="brand-divider"></span>
         <span class="brand-product">合同审批辅助平台</span>
       </a>
+      <nav class="product-nav" aria-label="主要功能">
+        <button type="button" :class="{ active: appSection === 'imports' }" @click="switchAppSection('imports')">知识导入</button>
+        <button type="button" :class="{ active: appSection === 'review' }" @click="switchAppSection('review')">风险审查</button>
+      </nav>
       <div class="topbar-actions">
         <div class="api-status" :class="healthStatus">
           <span class="status-dot"></span>
@@ -403,7 +415,7 @@ function formatBytes(size) {
       </div>
     </header>
 
-    <main>
+    <main v-if="appSection === 'imports'">
       <section class="hero">
         <div class="eyebrow"><Sparkles :size="15" /> {{ isPolicy ? '制度知识准备' : '合同数据准备' }}</div>
         <div class="hero-row">
@@ -716,6 +728,8 @@ function formatBytes(size) {
         </aside>
       </section>
     </main>
+
+    <RiskReviewPanel v-else />
 
     <footer>
       <span>Intelligent Approval Assistance Platform</span>

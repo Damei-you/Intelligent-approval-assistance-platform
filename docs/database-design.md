@@ -125,6 +125,8 @@ DRAFT -> PARSING -> READY -> REVIEWING -> PENDING_APPROVAL
 
 #### `review_check_items` — 风险检查项
 
+当前演示版本启用付款、质保、违约责任和争议解决四项检查；其他预置检查项通过迁移停用但不删除，避免破坏历史引用。
+
 保存付款、交付、验收、违约责任、解除终止和争议解决等预定义检查项。`prompt_template` 是该检查节点的专用指令，`sort_order` 控制工作流展示顺序。
 
 #### `review_check_item_scopes` — 检查项适用范围

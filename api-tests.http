@@ -126,3 +126,21 @@ Content-Type: text/plain
 ### 查询制度向量化进度
 GET http://127.0.0.1:8000/api/v1/policies/imports/请替换为document_id/vectorization
 Accept: application/json
+
+### 查询可审查合同
+GET http://127.0.0.1:8000/api/v1/risk-reviews/contracts
+Accept: application/json
+
+### 创建付款、质保、违约责任和争议解决四分支并行风险审查
+# contract_id 来自合同导入响应；合同和制度需先完成向量化。
+POST http://127.0.0.1:8000/api/v1/risk-reviews
+Content-Type: application/json
+
+{
+  "contract_id": "请替换为contract_id"
+}
+
+### 查询审查进度及证据报告
+# review_run_id 来自创建风险审查响应。
+GET http://127.0.0.1:8000/api/v1/risk-reviews/请替换为review_run_id
+Accept: application/json

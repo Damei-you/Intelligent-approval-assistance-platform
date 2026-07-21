@@ -4,6 +4,8 @@
 
 当前仓库已提供 PostgreSQL/pgvector 容器及数据库初始化脚本。数据库包含合同知识库、风险检查、两级审批、合同问答、LangGraph 可观测记录和 Celery 任务记录等表。
 
+风险审查智能体已实现付款、质保、违约责任和争议解决四项并行 RAG 检查。审查通过 Celery 异步执行 LangGraph 四分支工作流，每项结论均保存合同条款与制度依据，四项结束后统一汇总，前端提供进度、汇总和证据对照展示。
+
 ## 启动 PostgreSQL 与 Redis
 
 前置条件：Docker Desktop 已启动。
@@ -48,6 +50,13 @@ docker compose exec postgres psql -U approval_user -d approval_assistant -c "SEL
 
 PostgreSQL 官方镜像只会在空数据目录上运行初始化脚本。后续修改 SQL 时应通过迁移工具升级已有数据库；开发阶段如果明确要销毁现有演示数据，可以删除 Compose 数据卷后重新创建。
 
+已有数据库启用风险审查四项检查时执行：
+
+```powershell
+docker compose up -d postgres
+docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/003_risk_review_agent.sql
+```
+
 完整表结构说明见 [docs/database-design.md](docs/database-design.md)。
 
 ## 合同与制度依据导入接口
@@ -73,7 +82,7 @@ Swagger UI：`http://127.0.0.1:8000/docs`
 
 ## Vue 展示页面
 
-前端位于 `frontend`，用于演示 PDF/TXT/JSON 合同与制度依据导入、人工确认、向量化进度和导入结果。
+前端位于 `frontend`，用于演示 PDF/TXT/JSON 合同与制度依据导入、人工确认、向量化进度，以及合同风险审查报告。
 
 先启动后端：
 

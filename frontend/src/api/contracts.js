@@ -107,3 +107,19 @@ export function getPolicyImportDetail(documentId) {
 export function getPolicyVectorizationStatus(documentId) {
   return request(`/api/v1/policies/imports/${documentId}/vectorization`)
 }
+
+export function listReviewContracts() {
+  return request('/api/v1/risk-reviews/contracts')
+}
+
+export function createRiskReview(contractId) {
+  return request('/api/v1/risk-reviews', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contract_id: contractId }),
+  })
+}
+
+export function getRiskReview(reviewRunId) {
+  return request(`/api/v1/risk-reviews/${reviewRunId}`)
+}

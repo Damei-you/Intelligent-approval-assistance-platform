@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.modules.contract_import.router import router as contract_import_router
 from app.modules.policy_import.router import router as policy_import_router
+from app.modules.risk_review.router import router as risk_review_router
 
 
 # FastAPI 应用对象负责汇总路由、中间件和自动生成的 OpenAPI 文档。
@@ -24,6 +25,7 @@ app.add_middleware(
 )
 app.include_router(contract_import_router)
 app.include_router(policy_import_router)
+app.include_router(risk_review_router)
 
 
 @app.get("/health", tags=["系统"])

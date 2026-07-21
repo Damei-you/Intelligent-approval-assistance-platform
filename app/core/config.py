@@ -35,6 +35,8 @@ class Settings:
     embedding_model: str = "text-embedding-v4"
     embedding_dimension: int = 1536
     embedding_batch_size: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "10"))
+    # 风险审查复用同一个百炼兼容接口和 api-key，只单独配置生成式模型名称。
+    review_model: str = os.getenv("REVIEW_MODEL", "qwen-plus")
     cors_origins: tuple[str, ...] = tuple(
         origin.strip()
         for origin in os.getenv(
