@@ -70,3 +70,59 @@ Content-Type: text/plain
 
 < ./examples/contract-import.txt
 --WebAppBoundary--
+
+### 查询向量化进度
+# 把 document_id 替换为确认导入接口返回的值。
+GET http://127.0.0.1:8000/api/v1/contracts/imports/请替换为document_id/vectorization
+Accept: application/json
+
+### JSON 制度依据导入
+POST http://127.0.0.1:8000/api/v1/policies/imports/json
+Content-Type: application/json
+
+{
+  "policy_no": "ZD-HTTP-001",
+  "title": "采购合同管理制度",
+  "version": "V1.0",
+  "issuer": "采购管理部",
+  "effective_date": "2026-07-01",
+  "sections": [
+    {
+      "section_no": "第三条",
+      "title": "预付款控制",
+      "content": "采购合同预付款比例原则上不得超过合同总价的百分之三十。"
+    },
+    {
+      "section_no": "第九条",
+      "title": "质量保证",
+      "content": "一般办公设备的质保期原则上不得少于十二个月。"
+    }
+  ]
+}
+
+### TXT 制度文件解析预览（不会写数据库）
+POST http://127.0.0.1:8000/api/v1/policies/imports/preview/file
+Content-Type: multipart/form-data; boundary=PolicyBoundary
+
+--PolicyBoundary
+Content-Disposition: form-data; name="policy_no"
+
+ZD-HTTP-002
+--PolicyBoundary
+Content-Disposition: form-data; name="title"
+
+采购合同管理制度
+--PolicyBoundary
+Content-Disposition: form-data; name="version"
+
+V1.0
+--PolicyBoundary
+Content-Disposition: form-data; name="file"; filename="demo-procurement-policy.txt"
+Content-Type: text/plain
+
+< ./output/txt/demo-procurement-policy.txt
+--PolicyBoundary--
+
+### 查询制度向量化进度
+GET http://127.0.0.1:8000/api/v1/policies/imports/请替换为document_id/vectorization
+Accept: application/json

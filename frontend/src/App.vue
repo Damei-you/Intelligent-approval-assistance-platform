@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   ArrowRight,
+  BookOpen,
   Braces,
   Check,
   CheckCircle2,
@@ -26,12 +27,18 @@ import {
 import {
   checkHealth,
   confirmContractFile,
+  confirmPolicyFile,
   getImportDetail,
+  getPolicyImportDetail,
+  getPolicyVectorizationStatus,
+  getVectorizationStatus,
   importJsonContract,
+  importJsonPolicy,
   previewContractFile,
+  previewPolicyFile,
 } from './api/contracts'
 
-const sampleJson = `{
+const contractSampleJson = `{
   "contract_no": "CG-2026-001",
   "name": "办公设备采购合同",
   "contract_type_code": "PURCHASE",
@@ -52,6 +59,27 @@ const sampleJson = `{
   ]
 }`
 
+const policySampleJson = `{
+  "policy_no": "ZD-CG-2026-001",
+  "title": "采购合同管理制度",
+  "version": "V1.0",
+  "issuer": "采购管理部",
+  "effective_date": "2026-07-01",
+  "sections": [
+    {
+      "section_no": "第三条",
+      "title": "预付款控制",
+      "content": "采购合同预付款比例原则上不得超过合同总价的百分之三十。"
+    },
+    {
+      "section_no": "第九条",
+      "title": "质量保证",
+      "content": "一般办公设备的质保期原则上不得少于十二个月。"
+    }
+  ]
+}`
+
+const resourceType = ref('contract')
 const activeMode = ref('file')
 const selectedFile = ref(null)
 const isDragging = ref(false)
@@ -59,12 +87,22 @@ const isSubmitting = ref(false)
 const errorMessage = ref('')
 const result = ref(null)
 const resultDetail = ref(null)
+const vectorization = ref(null)
 const preview = ref(null)
 const previewJson = ref('')
 const copiedField = ref('')
 const healthStatus = ref('checking')
 const fileInput = ref(null)
-const jsonText = ref(sampleJson)
+const contractJsonText = ref(contractSampleJson)
+const policyJsonText = ref(policySampleJson)
+const jsonText = computed({
+  get: () => resourceType.value === 'contract' ? contractJsonText.value : policyJsonText.value,
+  set: (value) => {
+    if (resourceType.value === 'contract') contractJsonText.value = value
+    else policyJsonText.value = value
+  },
+})
+let vectorizationTimer = null
 
 const form = reactive({
   contract_no: '',
@@ -74,6 +112,14 @@ const form = reactive({
   amount: '',
   currency: 'CNY',
   document_title: '',
+})
+
+const policyForm = reactive({
+  policy_no: '',
+  title: '',
+  version: 'V1.0',
+  issuer: '',
+  effective_date: '',
 })
 
 const fileExtension = computed(() => {
@@ -86,16 +132,42 @@ const acceptedFile = computed(() => ['PDF', 'TXT', 'JSON'].includes(fileExtensio
 const canSubmitFile = computed(() => {
   if (!selectedFile.value || !acceptedFile.value) return false
   if (isJsonFile.value) return true
+  if (resourceType.value === 'policy') {
+    return Boolean(policyForm.policy_no.trim() && policyForm.title.trim())
+  }
   return Boolean(form.contract_no.trim() && form.name.trim() && form.contract_type_code)
 })
+
+const isPolicy = computed(() => resourceType.value === 'policy')
+const itemLabel = computed(() => isPolicy.value ? '章节' : '条款')
+const previewItemCount = computed(() => preview.value?.section_count ?? preview.value?.clause_count ?? 0)
+const resultItemCount = computed(() => result.value?.section_count ?? result.value?.clause_count ?? 0)
+const vectorizedItemCount = computed(() => resultDetail.value?.vectorized_section_count ?? resultDetail.value?.vectorized_clause_count ?? 0)
 
 const pipelineSteps = computed(() => [
   { label: '文件校验', detail: 'PDF · TXT · JSON', complete: Boolean(selectedFile.value) },
   { label: '文本解析', detail: isSubmitting.value && !preview.value ? '正在处理' : preview.value ? '解析完成' : '等待解析', complete: Boolean(preview.value) },
-  { label: '条款切分', detail: preview.value ? `${preview.value.clause_count} 个条款` : '自动识别', complete: Boolean(preview.value) },
+  { label: `${itemLabel.value}切分`, detail: preview.value ? `${previewItemCount.value} 个${itemLabel.value}` : '自动识别', complete: Boolean(preview.value) },
   { label: '人工确认 JSON', detail: result.value ? '已确认' : preview.value ? '等待确认' : '解析后确认', complete: Boolean(result.value), active: Boolean(preview.value && !result.value) },
   { label: '写入 PostgreSQL', detail: result.value ? `修订版本 V${result.value.revision_no}` : '确认后提交', complete: Boolean(result.value) },
+  {
+    label: '生成向量',
+    detail: vectorizationDetail.value,
+    complete: vectorization.value?.status === 'SUCCEEDED',
+    active: ['QUEUED', 'RUNNING', 'RETRYING'].includes(vectorization.value?.status),
+  },
 ])
+
+const vectorizationDetail = computed(() => {
+  const status = vectorization.value?.status || result.value?.vectorization_status
+  if (status === 'NOT_CONFIGURED') return '未配置 API Key'
+  if (status === 'QUEUED') return '等待 Celery Worker'
+  if (status === 'RUNNING') return `正在处理 ${vectorization.value?.progress ?? 0}%`
+  if (status === 'RETRYING') return '服务异常，正在重试'
+  if (status === 'SUCCEEDED') return '1536 维向量已写入'
+  if (status === 'FAILED') return '任务执行失败'
+  return '确认导入后执行'
+})
 
 onMounted(async () => {
   try {
@@ -106,11 +178,30 @@ onMounted(async () => {
   }
 })
 
+onBeforeUnmount(stopVectorizationPolling)
+
+function switchResource(type) {
+  if (resourceType.value === type) return
+  stopVectorizationPolling()
+  resourceType.value = type
+  activeMode.value = 'file'
+  selectedFile.value = null
+  errorMessage.value = ''
+  result.value = null
+  resultDetail.value = null
+  vectorization.value = null
+  preview.value = null
+  previewJson.value = ''
+  if (fileInput.value) fileInput.value.value = ''
+}
+
 function switchMode(mode) {
+  stopVectorizationPolling()
   activeMode.value = mode
   errorMessage.value = ''
   result.value = null
   resultDetail.value = null
+  vectorization.value = null
   preview.value = null
   previewJson.value = ''
 }
@@ -129,9 +220,11 @@ function onDrop(event) {
 }
 
 function setFile(file) {
+  stopVectorizationPolling()
   errorMessage.value = ''
   result.value = null
   resultDetail.value = null
+  vectorization.value = null
   preview.value = null
   previewJson.value = ''
   selectedFile.value = file || null
@@ -143,9 +236,11 @@ function setFile(file) {
 }
 
 function removeFile() {
+  stopVectorizationPolling()
   selectedFile.value = null
   result.value = null
   resultDetail.value = null
+  vectorization.value = null
   preview.value = null
   previewJson.value = ''
   errorMessage.value = ''
@@ -158,9 +253,12 @@ async function submitFile() {
   errorMessage.value = ''
   result.value = null
   resultDetail.value = null
+  vectorization.value = null
   try {
-    const metadata = isJsonFile.value ? null : { ...form }
-    preview.value = await previewContractFile(selectedFile.value, metadata)
+    const metadata = isJsonFile.value ? null : { ...(isPolicy.value ? policyForm : form) }
+    preview.value = isPolicy.value
+      ? await previewPolicyFile(selectedFile.value, metadata)
+      : await previewContractFile(selectedFile.value, metadata)
     previewJson.value = JSON.stringify(preview.value.payload, null, 2)
   } catch (error) {
     errorMessage.value = error.message || '导入失败，请检查文件内容。'
@@ -175,12 +273,11 @@ async function confirmPreview() {
   errorMessage.value = ''
   try {
     const payload = JSON.parse(previewJson.value)
-    result.value = await confirmContractFile(
-      selectedFile.value,
-      preview.value.preview_hash,
-      payload,
-    )
+    result.value = isPolicy.value
+      ? await confirmPolicyFile(selectedFile.value, preview.value.preview_hash, payload)
+      : await confirmContractFile(selectedFile.value, preview.value.preview_hash, payload)
     await refreshDetail()
+    await startVectorizationPolling()
   } catch (error) {
     errorMessage.value = error instanceof SyntaxError
       ? `JSON 格式错误：${error.message}`
@@ -191,23 +288,30 @@ async function confirmPreview() {
 }
 
 function backToSource() {
+  stopVectorizationPolling()
   preview.value = null
   previewJson.value = ''
   result.value = null
   resultDetail.value = null
+  vectorization.value = null
   errorMessage.value = ''
 }
 
 async function submitJson() {
+  stopVectorizationPolling()
   if (isSubmitting.value) return
   isSubmitting.value = true
   errorMessage.value = ''
   result.value = null
   resultDetail.value = null
+  vectorization.value = null
   try {
     const payload = JSON.parse(jsonText.value)
-    result.value = await importJsonContract(payload)
+    result.value = isPolicy.value
+      ? await importJsonPolicy(payload)
+      : await importJsonContract(payload)
     await refreshDetail()
+    await startVectorizationPolling()
   } catch (error) {
     errorMessage.value = error instanceof SyntaxError
       ? `JSON 格式错误：${error.message}`
@@ -220,9 +324,48 @@ async function submitJson() {
 async function refreshDetail() {
   if (!result.value?.document_id) return
   try {
-    resultDetail.value = await getImportDetail(result.value.document_id)
+    resultDetail.value = isPolicy.value
+      ? await getPolicyImportDetail(result.value.document_id)
+      : await getImportDetail(result.value.document_id)
   } catch {
     resultDetail.value = null
+  }
+}
+
+async function startVectorizationPolling() {
+  stopVectorizationPolling()
+  vectorization.value = {
+    job_id: result.value?.vectorization_job_id,
+    status: result.value?.vectorization_status,
+    progress: 0,
+  }
+  // API Key 未配置或连任务记录都未能创建时，不再发起无意义的轮询。
+  if (vectorization.value.status === 'NOT_CONFIGURED') return
+  if (vectorization.value.status === 'FAILED' && !vectorization.value.job_id) return
+  await refreshVectorizationStatus()
+  if (!['QUEUED', 'RUNNING', 'RETRYING'].includes(vectorization.value?.status)) return
+  vectorizationTimer = window.setInterval(refreshVectorizationStatus, 1500)
+}
+
+async function refreshVectorizationStatus() {
+  if (!result.value?.document_id) return
+  try {
+    vectorization.value = isPolicy.value
+      ? await getPolicyVectorizationStatus(result.value.document_id)
+      : await getVectorizationStatus(result.value.document_id)
+    if (['SUCCEEDED', 'FAILED', 'NOT_CONFIGURED', 'CANCELLED'].includes(vectorization.value.status)) {
+      stopVectorizationPolling()
+      await refreshDetail()
+    }
+  } catch {
+    stopVectorizationPolling()
+  }
+}
+
+function stopVectorizationPolling() {
+  if (vectorizationTimer !== null) {
+    window.clearInterval(vectorizationTimer)
+    vectorizationTimer = null
   }
 }
 
@@ -262,28 +405,36 @@ function formatBytes(size) {
 
     <main>
       <section class="hero">
-        <div class="eyebrow"><Sparkles :size="15" /> 合同数据准备</div>
+        <div class="eyebrow"><Sparkles :size="15" /> {{ isPolicy ? '制度知识准备' : '合同数据准备' }}</div>
         <div class="hero-row">
           <div>
-            <h1>把合同，变成<br /><em>可审查的条款数据</em></h1>
-            <p>导入合同正文，自动解析条款结构并安全写入知识库，为后续风险检查准备可信数据。</p>
+            <h1>{{ isPolicy ? '把制度，变成' : '把合同，变成' }}<br /><em>{{ isPolicy ? '可检索的规则依据' : '可审查的条款数据' }}</em></h1>
+            <p>{{ isPolicy ? '导入企业制度，形成可检索、可引用的制度章节，为合同风险检查提供可信依据。' : '导入合同正文，自动解析条款结构并安全写入知识库，为后续风险检查准备可信数据。' }}</p>
           </div>
           <div class="hero-metrics" aria-label="能力概览">
             <div><strong>3</strong><span>支持格式</span></div>
             <div><strong>20<small>MB</small></strong><span>单文件上限</span></div>
-            <div><strong>0</strong><span>当前向量数</span></div>
+            <div><strong>{{ vectorizedItemCount }}</strong><span>当前向量数</span></div>
           </div>
         </div>
       </section>
 
       <section class="workspace">
         <div class="workspace-main">
+          <div class="resource-tabs" role="tablist" aria-label="知识类型">
+            <button type="button" :class="{ active: !isPolicy }" :aria-selected="!isPolicy" @click="switchResource('contract')">
+              <FileText :size="17" /> 合同条款
+            </button>
+            <button type="button" :class="{ active: isPolicy }" :aria-selected="isPolicy" @click="switchResource('policy')">
+              <BookOpen :size="17" /> 制度依据
+            </button>
+          </div>
           <div class="section-heading">
             <div>
               <span class="section-index">01</span>
-              <h2>导入合同</h2>
+              <h2>{{ isPolicy ? '导入制度依据' : '导入合同' }}</h2>
             </div>
-            <p>选择原始文件，或直接提交结构化条款。</p>
+            <p>选择原始文件，或直接提交结构化{{ itemLabel }}。</p>
           </div>
 
           <div class="mode-tabs" role="tablist" aria-label="导入方式">
@@ -303,7 +454,7 @@ function formatBytes(size) {
               :class="{ active: activeMode === 'json' }"
               @click="switchMode('json')"
             >
-              <Braces :size="17" /> JSON 条款
+              <Braces :size="17" /> JSON {{ itemLabel }}
             </button>
           </div>
 
@@ -324,7 +475,7 @@ function formatBytes(size) {
               <input ref="fileInput" type="file" accept=".pdf,.txt,.json" hidden @change="onFileInput" />
               <template v-if="!selectedFile">
                 <div class="upload-icon"><CloudUpload :size="29" /></div>
-                <strong>拖放合同到这里</strong>
+                <strong>拖放{{ isPolicy ? '制度' : '合同' }}到这里</strong>
                 <span>或点击选择本地文件</span>
                 <div class="format-pills"><b>PDF</b><b>TXT</b><b>JSON</b><i>最大 20 MB</i></div>
               </template>
@@ -344,10 +495,10 @@ function formatBytes(size) {
 
             <div v-if="isJsonFile" class="inline-note">
               <FileBraces :size="18" />
-              <div><strong>结构化 JSON 文件</strong><span>合同元数据和 clauses 条款数组将直接从文件读取。</span></div>
+              <div><strong>结构化 JSON 文件</strong><span>{{ isPolicy ? '制度元数据和 sections 章节数组' : '合同元数据和 clauses 条款数组' }}将直接从文件读取。</span></div>
             </div>
 
-            <div v-else class="metadata-form">
+            <div v-else-if="!isPolicy" class="metadata-form">
               <div class="form-intro">
                 <h3>合同基础信息</h3>
                 <span><i>*</i> 为必填项</span>
@@ -386,6 +537,35 @@ function formatBytes(size) {
               </div>
             </div>
 
+            <div v-else class="metadata-form">
+              <div class="form-intro">
+                <h3>制度基础信息</h3>
+                <span><i>*</i> 为必填项</span>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>制度编号 <i>*</i></span>
+                  <input v-model="policyForm.policy_no" type="text" placeholder="例如：ZD-CG-2026-001" />
+                </label>
+                <label>
+                  <span>制度名称 <i>*</i></span>
+                  <input v-model="policyForm.title" type="text" placeholder="例如：采购合同管理制度" />
+                </label>
+                <label>
+                  <span>制度版本</span>
+                  <input v-model="policyForm.version" type="text" placeholder="V1.0" />
+                </label>
+                <label>
+                  <span>发布部门</span>
+                  <input v-model="policyForm.issuer" type="text" placeholder="例如：采购管理部" />
+                </label>
+                <label>
+                  <span>生效日期</span>
+                  <input v-model="policyForm.effective_date" type="date" />
+                </label>
+              </div>
+            </div>
+
             <div v-if="errorMessage" class="error-banner"><CircleAlert :size="18" /><span>{{ errorMessage }}</span></div>
 
             <div class="submit-row">
@@ -404,7 +584,7 @@ function formatBytes(size) {
                 <span><CheckCircle2 :size="22" /></span>
                 <div>
                   <strong>解析完成，等待确认</strong>
-                  <p>已识别 {{ preview.clause_count }} 个条款，目前尚未写入数据库。</p>
+                  <p>已识别 {{ previewItemCount }} 个{{ itemLabel }}，目前尚未写入数据库。</p>
                 </div>
                 <em>{{ preview.source_format }} · {{ formatBytes(preview.file_size) }}</em>
               </div>
@@ -413,7 +593,7 @@ function formatBytes(size) {
                 <div><FileBraces :size="18" /><strong>解析后的标准 JSON</strong></div>
                 <span>{{ result ? '已确认并写入数据库' : '可以直接修改后再确认' }}</span>
               </div>
-              <textarea v-model="previewJson" class="preview-editor" :readonly="Boolean(result)" aria-label="待确认的合同 JSON" spellcheck="false"></textarea>
+              <textarea v-model="previewJson" class="preview-editor" :readonly="Boolean(result)" :aria-label="`待确认的${isPolicy ? '制度' : '合同'} JSON`" spellcheck="false"></textarea>
 
               <div v-if="preview.warnings?.length" class="warning-list">
                 <CircleAlert :size="17" />
@@ -423,7 +603,7 @@ function formatBytes(size) {
 
               <div class="submit-row confirmation-actions">
                 <button class="secondary-button" type="button" :disabled="isSubmitting" @click="backToSource">
-                  <Undo2 :size="16" /> {{ result ? '继续导入其他合同' : '返回修改来源' }}
+                  <Undo2 :size="16" /> {{ result ? `继续导入其他${isPolicy ? '制度' : '合同'}` : '返回修改来源' }}
                 </button>
                 <div>
                   <span><ShieldCheck :size="15" /> 点击确认后才会写入 PostgreSQL</span>
@@ -440,13 +620,13 @@ function formatBytes(size) {
 
           <div v-else class="mode-panel json-panel">
             <div class="json-toolbar">
-              <div><FileBraces :size="18" /><strong>结构化合同数据</strong></div>
+              <div><FileBraces :size="18" /><strong>结构化{{ isPolicy ? '制度' : '合同' }}数据</strong></div>
               <span>application/json</span>
             </div>
-            <textarea v-model="jsonText" aria-label="合同 JSON 内容" spellcheck="false"></textarea>
+            <textarea v-model="jsonText" :aria-label="`${isPolicy ? '制度' : '合同'} JSON 内容`" spellcheck="false"></textarea>
             <div v-if="errorMessage" class="error-banner"><CircleAlert :size="18" /><span>{{ errorMessage }}</span></div>
             <div class="submit-row">
-              <span><Braces :size="15" /> clauses 至少包含一个有效条款</span>
+              <span><Braces :size="15" /> {{ isPolicy ? 'sections' : 'clauses' }} 至少包含一个有效{{ itemLabel }}</span>
               <button class="primary-button" type="button" :disabled="isSubmitting" @click="submitJson">
                 <LoaderCircle v-if="isSubmitting" class="spinner" :size="18" />
                 <Database v-else :size="18" />
@@ -460,7 +640,7 @@ function formatBytes(size) {
         <aside class="workspace-aside">
           <div class="aside-header">
             <span class="section-index">02</span>
-            <div><h2>处理状态</h2><p>从原始文件到条款数据</p></div>
+            <div><h2>处理状态</h2><p>从原始文件到{{ itemLabel }}数据</p></div>
           </div>
 
           <div class="pipeline">
@@ -471,21 +651,22 @@ function formatBytes(size) {
               </div>
               <div><strong>{{ step.label }}</strong><span>{{ step.detail }}</span></div>
             </div>
-            <div class="pipeline-step future">
-              <div class="step-marker"><Sparkles :size="13" /></div>
-              <div><strong>生成向量</strong><span>后续阶段</span></div>
-              <em>暂未启用</em>
-            </div>
           </div>
 
           <div v-if="result" class="result-card">
             <div class="result-title">
               <span><CheckCircle2 :size="20" /></span>
-              <div><strong>导入完成</strong><small>{{ result.contract_no }} · V{{ result.revision_no }}</small></div>
+              <div><strong>导入完成</strong><small>{{ isPolicy ? result.policy_no : result.contract_no }} · 修订 {{ result.revision_no }}</small></div>
             </div>
             <div class="result-stats">
-              <div><strong>{{ result.clause_count }}</strong><span>识别条款</span></div>
-              <div><strong>{{ resultDetail?.vectorized_clause_count ?? 0 }}</strong><span>已向量化</span></div>
+              <div><strong>{{ resultItemCount }}</strong><span>识别{{ itemLabel }}</span></div>
+              <div><strong>{{ vectorizedItemCount }}</strong><span>已向量化</span></div>
+            </div>
+            <div class="vectorization-state" :class="vectorization?.status?.toLowerCase()">
+              <LoaderCircle v-if="['QUEUED', 'RUNNING', 'RETRYING'].includes(vectorization?.status)" class="spinner" :size="15" />
+              <Sparkles v-else :size="15" />
+              <span>向量化：{{ vectorizationDetail }}</span>
+              <em v-if="vectorization?.model_name">{{ vectorization.model_name }}</em>
             </div>
             <div class="result-identifiers">
               <label>
@@ -496,11 +677,19 @@ function formatBytes(size) {
                   <Clipboard v-else :size="14" />
                 </button>
               </label>
-              <label>
+              <label v-if="!isPolicy">
                 <span><Layers3 :size="13" /> Contract ID</span>
                 <button type="button" @click="copyValue(result.contract_id, 'contract')">
                   <code>{{ result.contract_id.slice(0, 8) }}…{{ result.contract_id.slice(-6) }}</code>
                   <Check v-if="copiedField === 'contract'" :size="14" />
+                  <Clipboard v-else :size="14" />
+                </button>
+              </label>
+              <label v-else>
+                <span><BookOpen :size="13" /> Policy No</span>
+                <button type="button" @click="copyValue(result.policy_no, 'policy')">
+                  <code>{{ result.policy_no }}</code>
+                  <Check v-if="copiedField === 'policy'" :size="14" />
                   <Clipboard v-else :size="14" />
                 </button>
               </label>
@@ -510,19 +699,19 @@ function formatBytes(size) {
           <div v-else-if="preview" class="confirmation-card">
             <div><FileBraces :size="25" /></div>
             <strong>JSON 等待人工确认</strong>
-            <p>你可以检查或修改左侧内容。确认前不会产生合同、文档和条款记录。</p>
-            <span><i></i>{{ preview.clause_count }} 个待确认条款</span>
+            <p>你可以检查或修改左侧内容。确认前不会产生{{ isPolicy ? '制度文档和章节' : '合同、文档和条款' }}记录。</p>
+            <span><i></i>{{ previewItemCount }} 个待确认{{ itemLabel }}</span>
           </div>
 
           <div v-else class="empty-result">
             <div><FileCheck2 :size="25" /></div>
             <strong>等待导入结果</strong>
-            <p>成功导入后，这里会展示条款数量、修订版本和数据标识。</p>
+            <p>成功导入后，这里会展示{{ itemLabel }}数量、修订版本和数据标识。</p>
           </div>
 
           <div class="assurance">
             <ShieldCheck :size="17" />
-            <p><strong>数据边界清晰</strong><span>本阶段仅解析和入库，不调用 Embedding 模型。</span></p>
+            <p><strong>异步且可追踪</strong><span>确认入库后由 Redis 与 Celery 异步生成 1536 维向量。</span></p>
           </div>
         </aside>
       </section>

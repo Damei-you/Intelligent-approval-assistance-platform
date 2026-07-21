@@ -52,6 +52,9 @@ main { width: min(1360px, calc(100% - 48px)); margin: 0 auto; }
 
 .workspace { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(310px, .65fr); border: 1px solid #d5dbd4; border-radius: 24px; overflow: hidden; background: var(--surface); box-shadow: 0 24px 70px rgba(36, 52, 43, .08); }
 .workspace-main { padding: clamp(24px, 3vw, 42px); min-width: 0; }
+.resource-tabs { display: inline-flex; gap: 6px; margin-bottom: 22px; padding: 5px; border-radius: 13px; background: #e3e9e3; }
+.resource-tabs button { min-width: 118px; height: 38px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 9px; color: #69756e; background: transparent; font-size: 12px; font-weight: 700; }
+.resource-tabs button.active { color: white; background: var(--green); box-shadow: 0 7px 16px rgba(13,107,77,.18); }
 .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 25px; }
 .section-heading > div { display: flex; align-items: center; gap: 13px; }
 .section-index { min-width: 28px; height: 28px; display: inline-grid; place-items: center; color: var(--green); border: 1px solid #bad1c4; border-radius: 8px; font-size: 10px; font-weight: 700; }
@@ -167,6 +170,10 @@ label i, .form-intro i { color: #c56858; font-style: normal; }
 .result-stats div { padding: 15px 17px; display: flex; flex-direction: column; gap: 4px; background: #f4f7f3; }
 .result-stats strong { color: var(--green); font-size: 21px; }
 .result-stats span { color: #7e8982; font-size: 9px; }
+.vectorization-state { margin: 12px 17px 0; padding: 9px 10px; display: flex; align-items: center; gap: 7px; border-radius: 8px; color: #49665a; background: #e8f0eb; font-size: 9px; }
+.vectorization-state em { margin-left: auto; color: #738078; font-style: normal; }
+.vectorization-state.failed { color: #9c433e; background: #f8e8e6; }
+.vectorization-state.not_configured { color: #81691f; background: #f6efd8; }
 .result-identifiers { padding: 14px 17px; display: flex; flex-direction: column; gap: 10px; }
 .result-identifiers label > span { display: flex; align-items: center; gap: 5px; color: #7e8982; font-size: 9px; }
 .result-identifiers button { width: 100%; margin-top: 5px; padding: 8px 9px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #dfe5df; border-radius: 7px; color: #557064; background: white; }

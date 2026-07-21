@@ -11,6 +11,16 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 ContractTypeCode = Literal["PURCHASE", "SALES"]
+VectorizationStatus = Literal[
+    "NOT_CONFIGURED",
+    "NOT_STARTED",
+    "QUEUED",
+    "RUNNING",
+    "RETRYING",
+    "SUCCEEDED",
+    "FAILED",
+    "CANCELLED",
+]
 
 
 class ImportFormat(StrEnum):
@@ -106,7 +116,9 @@ class ContractImportResponse(BaseModel):
     parse_status: Literal["PARSED"] = "PARSED"
     clause_count: int
     vectorized: Literal[False] = False
-    message: str = "合同及条款导入成功，尚未进行向量化。"
+    vectorization_job_id: UUID | None = None
+    vectorization_status: VectorizationStatus = "NOT_CONFIGURED"
+    message: str = "合同及条款导入成功。"
 
 
 class ContractImportPreviewResponse(BaseModel):
@@ -137,6 +149,18 @@ class ContractImportDetail(BaseModel):
     clause_count: int
     vectorized_clause_count: int
     created_at: datetime
+
+
+class DocumentVectorizationStatus(BaseModel):
+    document_id: UUID
+    job_id: UUID | None = None
+    status: VectorizationStatus
+    progress: int = Field(ge=0, le=100)
+    clause_count: int = Field(ge=0)
+    vectorized_clause_count: int = Field(ge=0)
+    model_name: str | None = None
+    dimension: int | None = None
+    error_message: str | None = None
 
 
 class ErrorResponse(BaseModel):

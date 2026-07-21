@@ -62,3 +62,48 @@ export function confirmContractFile(file, previewHash, payload) {
 export function getImportDetail(documentId) {
   return request(`/api/v1/contracts/imports/${documentId}`)
 }
+
+export function getVectorizationStatus(documentId) {
+  return request(`/api/v1/contracts/imports/${documentId}/vectorization`)
+}
+
+export function importJsonPolicy(payload) {
+  return request('/api/v1/policies/imports/json', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export function previewPolicyFile(file, metadata) {
+  const formData = new FormData()
+  formData.append('file', file)
+  if (metadata) {
+    Object.entries(metadata).forEach(([key, value]) => {
+      if (value !== '' && value !== null && value !== undefined) formData.append(key, value)
+    })
+  }
+  return request('/api/v1/policies/imports/preview/file', {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export function confirmPolicyFile(file, previewHash, payload) {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('preview_hash', previewHash)
+  formData.append('payload', JSON.stringify(payload))
+  return request('/api/v1/policies/imports/confirm/file', {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export function getPolicyImportDetail(documentId) {
+  return request(`/api/v1/policies/imports/${documentId}`)
+}
+
+export function getPolicyVectorizationStatus(documentId) {
+  return request(`/api/v1/policies/imports/${documentId}/vectorization`)
+}

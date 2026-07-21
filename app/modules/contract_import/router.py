@@ -14,6 +14,7 @@ from app.modules.contract_import.exceptions import (
     ContractImportError,
     DocumentParseError,
     FileTooLargeError,
+    ImportRecordNotFoundError,
 )
 from app.modules.contract_import.repository import ContractImportRepository
 from app.modules.contract_import.schemas import (
@@ -22,13 +23,16 @@ from app.modules.contract_import.schemas import (
     ContractImportPreviewResponse,
     ContractImportResponse,
     ContractJsonImportRequest,
+    DocumentVectorizationStatus,
     ErrorResponse,
 )
 from app.modules.contract_import.service import ContractImportService
+from app.modules.vectorization.service import VectorizationRepository
 
 
 router = APIRouter(prefix="/api/v1/contracts/imports", tags=["合同导入"])
 service = ContractImportService(ContractImportRepository())
+vectorization_repository = VectorizationRepository()
 
 
 @router.post(
@@ -158,6 +162,30 @@ async def get_contract_import(document_id: UUID) -> ContractImportDetail:
         return await run_in_threadpool(service.get_import_detail, str(document_id))
     except ContractImportError as exc:
         return _import_error_response(exc)
+
+
+@router.get(
+    "/{document_id}/vectorization",
+    response_model=DocumentVectorizationStatus,
+    summary="查询文档向量化进度",
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_document_vectorization(
+    document_id: UUID,
+) -> DocumentVectorizationStatus:
+    """返回最新 Celery 任务状态，以及已写入 pgvector 的条款数量。"""
+
+    try:
+        # psycopg 是同步驱动，因此在线程池中执行，避免数据库查询阻塞 FastAPI 事件循环。
+        result = await run_in_threadpool(
+            vectorization_repository.get_document_status,
+            document_id,
+        )
+        if result.status == "NOT_STARTED" and not settings.api_key:
+            return result.model_copy(update={"status": "NOT_CONFIGURED"})
+        return result
+    except ValueError as exc:
+        return _import_error_response(ImportRecordNotFoundError(str(exc)))
 
 
 def _build_file_metadata(

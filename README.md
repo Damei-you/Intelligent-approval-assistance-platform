@@ -4,12 +4,12 @@
 
 当前仓库已提供 PostgreSQL/pgvector 容器及数据库初始化脚本。数据库包含合同知识库、风险检查、两级审批、合同问答、LangGraph 可观测记录和 Celery 任务记录等表。
 
-## 启动 PostgreSQL
+## 启动 PostgreSQL 与 Redis
 
 前置条件：Docker Desktop 已启动。
 
 ```powershell
-docker compose up -d postgres
+docker compose up -d postgres redis
 docker compose ps
 ```
 
@@ -50,14 +50,22 @@ PostgreSQL 官方镜像只会在空数据目录上运行初始化脚本。后续
 
 完整表结构说明见 [docs/database-design.md](docs/database-design.md)。
 
-## 合同与条款导入接口
+## 合同与制度依据导入接口
 
-当前已支持 PDF、TXT 和 JSON 合同导入。文件会先解析成标准 JSON 供用户检查修改，确认后才保存合同、原始文档和条款分块；暂不生成向量。
+当前已支持 PDF、TXT 和 JSON 合同、制度依据导入。文件会先解析成标准 JSON 供用户检查修改，确认后才保存原始文档及条款/章节分块，并创建异步向量化任务。向量模型固定为 `text-embedding-v4`，输出维度固定为 1536。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m uvicorn main:app --reload
 ```
+
+另开一个 PowerShell 窗口启动 Celery Worker。API Key 必须同时存在于后端和 Worker 的环境中：
+
+```powershell
+.\.venv\Scripts\python.exe -m celery -A app.core.celery_app:celery_app worker --loglevel=INFO --pool=solo
+```
+
+`--pool=solo` 适合 Windows 本地演示。API Key 只读取现有的 `api-key` 环境变量，不需要再设置其他同义变量，也不要把真实值写入 `.env.example` 或提交到 GitHub。未配置 API Key 时合同仍会正常导入，响应会明确标记 `NOT_CONFIGURED`，且不会创建任务。
 
 Swagger UI：`http://127.0.0.1:8000/docs`
 
@@ -65,7 +73,7 @@ Swagger UI：`http://127.0.0.1:8000/docs`
 
 ## Vue 展示页面
 
-前端位于 `frontend`，用于演示 PDF/TXT/JSON 合同导入、解析进度和导入结果。
+前端位于 `frontend`，用于演示 PDF/TXT/JSON 合同与制度依据导入、人工确认、向量化进度和导入结果。
 
 先启动后端：
 

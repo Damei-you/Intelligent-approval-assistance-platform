@@ -29,6 +29,7 @@ from app.modules.contract_import.schemas import (
     ParsedClause,
     ParsedContract,
 )
+from app.modules.vectorization.service import enqueue_document_vectorization
 
 
 class ContractImportService:
@@ -123,7 +124,7 @@ class ContractImportService:
         except Exception:
             saved_path.unlink(missing_ok=True)
             raise
-        return ContractImportResponse.model_validate(result)
+        return self._build_import_response(result)
 
     def import_json(self, payload: ContractJsonImportRequest) -> ContractImportResponse:
         parsed = self._from_json_payload(payload)
@@ -135,11 +136,26 @@ class ContractImportService:
         ).encode("utf-8")
         parsed.file_hash = hashlib.sha256(canonical_json).hexdigest()
         result = self.repository.save_import(parsed)
-        return ContractImportResponse.model_validate(result)
+        return self._build_import_response(result)
 
     def get_import_detail(self, document_id: str) -> ContractImportDetail:
         result = self.repository.get_import_detail(document_id)
         return ContractImportDetail.model_validate(result)
+
+    def _build_import_response(self, result: dict[str, object]) -> ContractImportResponse:
+        """在导入事务提交后创建异步向量任务，并合并为接口响应。"""
+
+        # 向量任务必须放在 save_import 返回之后创建，确保 Celery Worker 不会读到尚未提交的条款。
+        # 即使 Redis 不可用，合同导入也已经成功；此时记录 FAILED 状态供前端明确展示。
+        vectorization = enqueue_document_vectorization(result["document_id"])
+        result["vectorization_job_id"] = vectorization["job_id"]
+        result["vectorization_status"] = vectorization["status"]
+        result["message"] = {
+            "QUEUED": "合同及条款导入成功，向量化任务已进入队列。",
+            "NOT_CONFIGURED": "合同及条款导入成功；未配置 api-key 环境变量，未创建向量化任务。",
+            "FAILED": "合同及条款导入成功，但向量化任务投递失败。",
+        }.get(vectorization["status"], "合同及条款导入成功。")
+        return ContractImportResponse.model_validate(result)
 
     def _from_text_file(
         self,

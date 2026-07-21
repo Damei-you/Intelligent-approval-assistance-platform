@@ -1,4 +1,4 @@
-# 合同与条款导入接口
+# 合同与制度依据导入接口
 
 ## 1. 模块边界
 
@@ -9,8 +9,11 @@
 3. 返回标准 JSON 预览，此时不保存文件、不写数据库。
 4. 用户在前端检查或修改 JSON。
 5. 用户确认后保存原文件，并写入 `contracts`、`documents` 和 `document_chunks`。
+6. 导入事务提交后，通过 Redis/Celery 异步生成条款向量并写入 pgvector。
 
-当前版本不调用 Embedding 模型，`document_chunks.embedding` 和 `embedding_model` 保持 `NULL`。返回值中的 `vectorized` 固定为 `false`。
+制度依据采用同样的“预览 - 人工确认 - 入库 - 异步向量化”流程。制度主文档写入 `documents`，其中 `document_type=POLICY`；章节写入 `document_chunks`，其中 `chunk_type=POLICY_SECTION`。制度编号、版本、发布部门和生效日期保存在文档 `metadata` 中。
+
+向量模型为 `text-embedding-v4`，维度固定为 1536，API Key 只从 `api-key` 环境变量读取。预览阶段不调用模型；确认导入成功后才创建向量化任务。向量化失败不会回滚已经导入的合同。
 
 默认单文件上限为 20 MB，可以通过 `MAX_UPLOAD_SIZE` 调整。PDF 仅支持包含文本层的文件，扫描版 PDF 暂不进行 OCR。
 
@@ -22,6 +25,12 @@
 | POST | `/api/v1/contracts/imports/confirm/file` | `multipart/form-data` | 提交确认后的 JSON 并正式入库 |
 | POST | `/api/v1/contracts/imports/json` | `application/json` | 直接提交结构化条款 |
 | GET | `/api/v1/contracts/imports/{document_id}` | - | 查询导入记录及向量化数量 |
+| GET | `/api/v1/contracts/imports/{document_id}/vectorization` | - | 查询向量化任务状态和进度 |
+| POST | `/api/v1/policies/imports/preview/file` | `multipart/form-data` | 解析制度文件并返回待确认 JSON |
+| POST | `/api/v1/policies/imports/confirm/file` | `multipart/form-data` | 确认制度 JSON 并正式入库 |
+| POST | `/api/v1/policies/imports/json` | `application/json` | 直接提交结构化制度章节 |
+| GET | `/api/v1/policies/imports/{document_id}` | - | 查询制度导入详情 |
+| GET | `/api/v1/policies/imports/{document_id}/vectorization` | - | 查询制度向量化进度 |
 
 解析预览使用 HTTP `200 OK`，且 `persisted` 固定为 `false`。确认导入使用 HTTP `201 Created`。重复导入同一个 `contract_no` 时，不创建新合同，而是创建新的合同文档修订版本，并将该版本设为当前版本。
 
@@ -125,9 +134,13 @@ Content-Type: application/json
   "parse_status": "PARSED",
   "clause_count": 1,
   "vectorized": false,
-  "message": "合同及条款导入成功，尚未进行向量化。"
+  "vectorization_job_id": "4c5d5dd3-073d-4b5c-9ad1-280fd70c09d6",
+  "vectorization_status": "QUEUED",
+  "message": "合同及条款导入成功，向量化任务已进入队列。"
 }
 ```
+
+`vectorized` 表示同步响应产生时是否已完成向量化，因此当前固定为 `false`。后续状态通过向量化进度接口查询。未配置 `api-key` 时，`vectorization_job_id` 为 `null`，状态为 `NOT_CONFIGURED`。
 
 ## 5. 查询导入结果
 
@@ -140,11 +153,68 @@ GET /api/v1/contracts/imports/{document_id}
 | 字段 | 说明 |
 |---|---|
 | `clause_count` | 本文档的条款/分块数量 |
-| `vectorized_clause_count` | 已存在 Embedding 的分块数，当前应为 0 |
+| `vectorized_clause_count` | 已写入 Embedding 的分块数 |
 | `revision_no` | 当前导入生成的合同文档修订号 |
 | `is_current` | 是否为该合同的当前版本 |
 
-## 6. 错误响应
+## 6. 查询向量化进度
+
+```http
+GET /api/v1/contracts/imports/{document_id}/vectorization
+```
+
+```json
+{
+  "document_id": "0478e113-fd81-4908-8131-b36fdcd3537a",
+  "job_id": "4c5d5dd3-073d-4b5c-9ad1-280fd70c09d6",
+  "status": "RUNNING",
+  "progress": 50,
+  "clause_count": 2,
+  "vectorized_clause_count": 1,
+  "model_name": "text-embedding-v4",
+  "dimension": 1536,
+  "error_message": null
+}
+```
+
+状态包括 `NOT_CONFIGURED`、`NOT_STARTED`、`QUEUED`、`RUNNING`、`RETRYING`、`SUCCEEDED`、`FAILED` 和 `CANCELLED`。任务按最多 10 条条款分批调用模型，并在每批写入后更新进度。
+
+## 7. 制度依据导入
+
+PDF/TXT 制度预览需提供以下表单字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `file` | 是 | `.pdf`、`.txt` 或 `.json` 文件 |
+| `policy_no` | PDF/TXT 必填 | 制度编号 |
+| `title` | PDF/TXT 必填 | 制度名称 |
+| `version` | 否 | 制度版本，默认 `V1.0` |
+| `issuer` | 否 | 发布部门 |
+| `effective_date` | 否 | 生效日期，格式 `YYYY-MM-DD` |
+
+结构化 JSON 示例：
+
+```json
+{
+  "policy_no": "ZD-CG-2026-001",
+  "title": "采购合同管理制度",
+  "version": "V1.0",
+  "issuer": "采购管理部",
+  "effective_date": "2026-07-01",
+  "sections": [
+    {
+      "section_no": "第三条",
+      "title": "预付款控制",
+      "content": "采购合同预付款比例原则上不得超过合同总价的百分之三十。"
+    }
+  ],
+  "metadata": {}
+}
+```
+
+同一 `policy_no` 再次导入时创建新的制度文档修订版本，并把旧版本标记为非当前版本。向量仍统一写入 `document_chunks.embedding`。
+
+## 8. 错误响应
 
 ```json
 {
@@ -164,12 +234,18 @@ GET /api/v1/contracts/imports/{document_id}
 
 FastAPI 自身的请求体校验错误仍使用标准 `422` 响应。
 
-## 7. 本地运行
+## 9. 本地运行
 
 ```powershell
-docker compose up -d postgres
+docker compose up -d postgres redis
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m uvicorn main:app --reload
+```
+
+另开一个终端启动 Worker：
+
+```powershell
+.\.venv\Scripts\python.exe -m celery -A app.core.celery_app:celery_app worker --loglevel=INFO --pool=solo
 ```
 
 启动后可访问：

@@ -15,6 +15,14 @@ from app.modules.contract_import.schemas import (
     ContractJsonImportRequest,
 )
 from app.modules.contract_import.service import ContractImportService
+from app.modules.vectorization.service import VectorizationRepository, VectorizationService
+
+
+class FakeEmbeddingProvider:
+    """测试替身：不访问外部 API，稳定返回 1536 维向量。"""
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[0.001] * 1536 for _ in texts]
 
 
 @unittest.skipUnless(
@@ -24,10 +32,27 @@ from app.modules.contract_import.service import ContractImportService
 class ContractImportIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.contract_no = f"IT-{uuid4().hex[:12]}"
+        self.original_api_key = settings.api_key
+        # 集成测试不应意外调用真实模型；向量写入由 FakeEmbeddingProvider 单独验证。
+        object.__setattr__(settings, "api_key", "")
 
     def tearDown(self) -> None:
+        object.__setattr__(
+            settings,
+            "api_key",
+            self.original_api_key,
+        )
         with open_connection() as connection:
             with connection.transaction():
+                document_ids = connection.execute(
+                    """
+                    SELECT d.id
+                    FROM documents d
+                    JOIN contracts c ON c.id = d.contract_id
+                    WHERE c.contract_no = %s
+                    """,
+                    (self.contract_no,),
+                ).fetchall()
                 stored_files = connection.execute(
                     """
                     SELECT d.storage_uri
@@ -37,6 +62,11 @@ class ContractImportIntegrationTests(unittest.TestCase):
                     """,
                     (self.contract_no,),
                 ).fetchall()
+                for row in document_ids:
+                    connection.execute(
+                        "DELETE FROM async_jobs WHERE resource_id = %s",
+                        (row["id"],),
+                    )
                 connection.execute(
                     "DELETE FROM contracts WHERE contract_no = %s",
                     (self.contract_no,),
@@ -74,6 +104,34 @@ class ContractImportIntegrationTests(unittest.TestCase):
         self.assertEqual(2, detail.clause_count)
         self.assertEqual(0, detail.vectorized_clause_count)
 
+    def test_vectorization_writes_1536_dimension_embeddings(self) -> None:
+        service = ContractImportService(ContractImportRepository())
+        result = service.import_json(
+            ContractJsonImportRequest(
+                contract_no=self.contract_no,
+                name="向量化集成测试合同",
+                contract_type_code="PURCHASE",
+                clauses=[
+                    {"clause_no": "第一条", "content": "验收后付款。"},
+                    {"clause_no": "第二条", "content": "供应方负责交付。"},
+                ],
+            )
+        )
+        repository = VectorizationRepository()
+        job = repository.create_job(result.document_id)
+
+        count = VectorizationService(
+            repository=repository,
+            provider=FakeEmbeddingProvider(),
+        ).vectorize_document(job["job_id"], result.document_id)
+        status = repository.get_document_status(result.document_id)
+
+        self.assertEqual(2, count)
+        self.assertEqual("SUCCEEDED", status.status)
+        self.assertEqual(2, status.vectorized_clause_count)
+        self.assertEqual("text-embedding-v4", status.model_name)
+        self.assertEqual(1536, status.dimension)
+
     def test_json_http_endpoint_and_detail_endpoint(self) -> None:
         payload = {
             "contract_no": self.contract_no,
@@ -108,6 +166,15 @@ class ContractImportIntegrationTests(unittest.TestCase):
         self.assertEqual(200, status_code)
         self.assertEqual(1, detail["clause_count"])
         self.assertEqual(0, detail["vectorized_clause_count"])
+
+        status_code, vectorization = asyncio.run(
+            _asgi_request(
+                "GET",
+                f"/api/v1/contracts/imports/{response['document_id']}/vectorization",
+            )
+        )
+        self.assertEqual(200, status_code)
+        self.assertEqual("NOT_CONFIGURED", vectorization["status"])
 
     def test_file_preview_does_not_persist_until_confirmation(self) -> None:
         service = ContractImportService(ContractImportRepository())
