@@ -1,0 +1,6 @@
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+pydantic==2.13.4
+psycopg[binary]>=3.2,<4.0
+pypdf>=6.0,<7.0
+python-multipart>=0.0.20,<1.0

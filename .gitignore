@@ -1,0 +1,73 @@
+# ------------------------------
+# 环境变量与本地密钥
+# ------------------------------
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ------------------------------
+# Python 虚拟环境、缓存与构建产物
+# ------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ------------------------------
+# Node.js / Vue / Vite
+# ------------------------------
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ------------------------------
+# IDE 与本地 Agent 配置
+# ------------------------------
+.idea/
+.vscode/
+*.iml
+.agents/
+.codex/
+
+# ------------------------------
+# 操作系统临时文件
+# ------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ------------------------------
+# 运行时文件、日志与测试临时目录
+# ------------------------------
+*.log
+logs/
+tmp/
+temp/
+.cache/
+celerybeat-schedule*
+
+# 上传的合同可能包含敏感信息，只保留空目录占位文件。
+storage/uploads/*
+!storage/uploads/.gitkeep

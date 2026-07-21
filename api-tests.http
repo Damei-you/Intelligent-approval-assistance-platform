@@ -1,0 +1,72 @@
+### 健康检查
+GET http://127.0.0.1:8000/health
+Accept: application/json
+
+### JSON 条款导入
+POST http://127.0.0.1:8000/api/v1/contracts/imports/json
+Content-Type: application/json
+
+{
+  "contract_no": "CG-HTTP-001",
+  "name": "HTTP 示例采购合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "示例供应商",
+  "amount": 100000,
+  "currency": "CNY",
+  "clauses": [
+    {
+      "clause_no": "第一条",
+      "title": "付款方式",
+      "content": "验收合格后十个工作日内付款。"
+    },
+    {
+      "clause_no": "第二条",
+      "title": "交付方式",
+      "content": "供应方应在约定日期前完成交付。"
+    }
+  ]
+}
+
+### TXT 文件解析预览（不会写数据库）
+POST http://127.0.0.1:8000/api/v1/contracts/imports/preview/file
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="contract_no"
+
+CG-HTTP-002
+--WebAppBoundary
+Content-Disposition: form-data; name="name"
+
+TXT 示例采购合同
+--WebAppBoundary
+Content-Disposition: form-data; name="contract_type_code"
+
+PURCHASE
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="contract-import.txt"
+Content-Type: text/plain
+
+< ./examples/contract-import.txt
+--WebAppBoundary--
+
+### 确认 TXT 解析结果并正式入库
+# 把上一个请求返回的 preview_hash 填入下面字段。
+POST http://127.0.0.1:8000/api/v1/contracts/imports/confirm/file
+Content-Type: multipart/form-data; boundary=WebAppBoundary
+
+--WebAppBoundary
+Content-Disposition: form-data; name="preview_hash"
+
+请替换为预览接口返回的preview_hash
+--WebAppBoundary
+Content-Disposition: form-data; name="payload"
+Content-Type: application/json
+
+< ./examples/contract-import.json
+--WebAppBoundary
+Content-Disposition: form-data; name="file"; filename="contract-import.txt"
+Content-Type: text/plain
+
+< ./examples/contract-import.txt
+--WebAppBoundary--
