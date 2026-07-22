@@ -41,6 +41,9 @@ flowchart LR
     AI --> AS[业务和法务审批节点]
 
     C --> CS[问答会话]
+    D --> CS
+    RR --> CS
+    RF --> CS
     CS --> CM[问答消息]
     CM --> CC[回答引用]
     DC --> CC
@@ -177,15 +180,42 @@ DRAFT -> PARSING -> READY -> REVIEWING -> PENDING_APPROVAL
 
 #### `chat_sessions`
 
-每个会话绑定一份合同，可选绑定某次风险报告。
+第一阶段每个会话绑定一个 `risk_findings` 风险项，并同时固化该风险项所属的
+`review_runs` 和审查使用的 `contract_document_id`。`contract_id` 用于合同维度查询，
+`finding_id + review_run_id + contract_document_id` 则共同保证回答始终基于创建会话时的
+风险结论与合同修订版本。合同产生新修订版后，旧会话不会自动切换到新版本。
+
+同一风险项重复打开“就此风险继续询问”时恢复已有会话。当前阶段不做跨风险项或跨合同的
+长期用户记忆，也不在会话表中维护自动摘要。
 
 #### `chat_messages`
 
-保存用户、助手和系统消息，并记录模型、Token 用量及响应耗时。
+保存用户、助手和系统消息，并记录模型、Token 用量及响应耗时。用户消息记录
+`intent` 和 `client_request_id`；`client_request_id` 用于避免客户端重试重复创建同一轮消息，
+同一幂等键若复用于不同问题或意图会返回冲突，而不是静默返回不相关的旧回答。
+助手消息可以通过 `structured_output` 保存条款修改草案等结构化结果，草案不是合同正文，
+不得据此直接更新 `documents` 或 `document_chunks`。
+
+每轮模型调用只组装风险项固定上下文和最近 10 条已成功历史消息；历史助手消息同时携带
+结构化草案和当轮引用标签快照，使“上一版草案”“刚才 P2”仍能定位到原文。全部消息仍按
+顺序长期保存，查询会话时可以完整展示；“仅最近 10 条”只是首阶段的模型短期上下文窗口。
+助手占位消息超过 10 分钟仍为 `PENDING` 时会被回收为 `FAILED`，避免进程中断永久锁住会话。
 
 #### `chat_message_citations`
 
-保存 AI 回答引用的合同条款或制度分块，用于前端展示可追溯引用。
+保存 AI 回答引用的合同条款或制度分块，用于前端展示可追溯引用。引用必须关联真实
+`document_chunks.id`，并保存后端校验后的 `citation_label` 和当时展示的 `cited_text`，不能直接信任模型虚构的条款编号或正文。
+模型遗漏或伪造引用、草案目标无法匹配真实候选时，服务不会自动改绑首条候选，而是保存安全
+提示并清空本轮引用与草案，避免制造错误的可追溯关系。
+模型显式返回 `insufficient_evidence=true` 时允许保存说明缺失材料的零引用回答，但不得同时
+保存草案。追问上一轮草案或引用时，历史 `chunk_id` 会恢复为带“上一轮实际引用”范围的本轮
+候选；普通风险结论解释仍只采用 `finding_evidence` 审查快照。
+合同引用必须属于会话固定的 `contract_document_id`；制度引用保留对应制度文档和分块，
+从而能够区分合同条款与企业制度依据。
+
+问答支持四个意图：`AUTO` 自动判断、`EXPLAIN` 解释已有结论、`EVIDENCE_QUERY` 查询条款与
+制度依据、`DRAFT_CLAUSE` 生成修改草案。问答消息和草案不会修改 `risk_findings`，也不会
+改变 `approval_instances`、`approval_steps` 或合同审批状态。
 
 ### 4.6 LangGraph 与 RAG 可观测性
 
@@ -250,5 +280,6 @@ flowchart TD
 | `database/init/001_schema.sql` | 创建扩展、20 张表、索引、约束和触发器 |
 | `database/init/002_seed.sql` | 初始化两种合同类型和六个风险检查项 |
 | `database/migrations/005_policy_reranking.sql` | 为已有数据库增加重排序追踪字段 |
+| `database/migrations/006_contract_chat.sql` | 为已有数据库增加风险项会话锚点、消息意图、结构化草案、幂等字段和引用标签 |
 
 初始化脚本由 `compose.yaml` 只读挂载到 `/docker-entrypoint-initdb.d`，仅在数据库数据卷首次创建时自动执行。

@@ -1,5 +1,9 @@
+@baseUrl = http://127.0.0.1:8000
+@findingId = 请替换为finding_id
+@chatSessionId = 请替换为session_id
+
 ### 健康检查
-GET http://127.0.0.1:8000/health
+GET {{baseUrl}}/health
 Accept: application/json
 
 ### JSON 条款导入
@@ -145,6 +149,57 @@ Content-Type: application/json
 # review_run_id 来自创建风险审查响应。
 GET http://127.0.0.1:8000/api/v1/risk-reviews/请替换为review_run_id
 Accept: application/json
+
+### 为风险项创建或恢复多轮问答会话
+# finding_id 来自风险审查详情中某一项 finding；会话会固定该风险项、审查任务和合同修订版本。
+POST {{baseUrl}}/api/v1/risk-findings/{{findingId}}/chat-sessions
+Accept: application/json
+
+### 查询会话历史、结构化草案和可追溯引用
+# 把创建或恢复会话响应中的 session_id 填入顶部 chatSessionId 变量。
+GET {{baseUrl}}/api/v1/chat-sessions/{{chatSessionId}}
+Accept: application/json
+
+### 解释已有风险结论
+POST {{baseUrl}}/api/v1/chat-sessions/{{chatSessionId}}/messages
+Content-Type: application/json
+
+{
+  "content": "为什么这一项被判断为高风险？",
+  "intent": "EXPLAIN",
+  "client_request_id": "11111111-1111-4111-8111-111111111111"
+}
+
+### 查询合同条款与制度依据
+POST {{baseUrl}}/api/v1/chat-sessions/{{chatSessionId}}/messages
+Content-Type: application/json
+
+{
+  "content": "请列出支持这项结论的合同条款和制度依据。",
+  "intent": "EVIDENCE_QUERY",
+  "client_request_id": "22222222-2222-4222-8222-222222222222"
+}
+
+### 根据风险建议生成条款修改草案
+# 草案只保存在助手消息中，不会写回合同，也不会自动影响审批。
+POST {{baseUrl}}/api/v1/chat-sessions/{{chatSessionId}}/messages
+Content-Type: application/json
+
+{
+  "content": "请在保留百分之二十预付款的前提下生成修改草案。",
+  "intent": "DRAFT_CLAUSE",
+  "client_request_id": "33333333-3333-4333-8333-333333333333"
+}
+
+### 自由追问并由后端自动判断意图
+# intent 可省略，后端默认使用 AUTO；同一 client_request_id 重试时请求内容必须保持一致。
+POST {{baseUrl}}/api/v1/chat-sessions/{{chatSessionId}}/messages
+Content-Type: application/json
+
+{
+  "content": "上一版草案为什么这样调整？",
+  "client_request_id": "44444444-4444-4444-8444-444444444444"
+}
 
 ### 查询辅助审批候选报告
 GET http://127.0.0.1:8000/api/v1/approvals/candidates

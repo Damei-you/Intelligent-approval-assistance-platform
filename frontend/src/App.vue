@@ -417,6 +417,17 @@ function formatBytes(size) {
       </div>
     </header>
 
+    <section class="demo-disclaimer" role="note" aria-label="演示数据声明">
+      <div class="demo-disclaimer-inner">
+        <span class="demo-disclaimer-icon"><CircleAlert :size="20" /></span>
+        <div>
+          <strong>虚构演示数据</strong>
+          <p>本平台展示的合同与制度均为虚构内容，仅供功能展示。请勿上传或录入真实合同、制度及任何敏感数据。</p>
+        </div>
+        <span class="demo-disclaimer-tag">非生产环境</span>
+      </div>
+    </section>
+
     <main v-if="appSection === 'imports'">
       <section class="hero">
         <div class="eyebrow"><Sparkles :size="15" /> {{ isPolicy ? '制度知识准备' : '合同数据准备' }}</div>
@@ -449,6 +460,14 @@ function formatBytes(size) {
               <h2>{{ isPolicy ? '导入制度依据' : '导入合同' }}</h2>
             </div>
             <p>选择原始文件，或直接提交结构化{{ itemLabel }}。</p>
+          </div>
+
+          <div class="data-safety-note" role="note">
+            <CircleAlert :size="18" />
+            <div>
+              <strong>仅使用虚构或完全脱敏的数据</strong>
+              <span>上传文件和粘贴的 JSON 可能保存到本地演示环境，请勿包含真实主体、金额、条款或内部制度。</span>
+            </div>
           </div>
 
           <div class="mode-tabs" role="tablist" aria-label="导入方式">
@@ -583,7 +602,7 @@ function formatBytes(size) {
             <div v-if="errorMessage" class="error-banner"><CircleAlert :size="18" /><span>{{ errorMessage }}</span></div>
 
             <div class="submit-row">
-              <span><ShieldCheck :size="15" /> 原始文件将保存在本地演示环境</span>
+              <span class="safety-reminder"><CircleAlert :size="15" /> 仅限虚构演示文件，请勿上传真实数据</span>
               <button class="primary-button" type="button" :disabled="!canSubmitFile || isSubmitting" @click="submitFile">
                 <LoaderCircle v-if="isSubmitting" class="spinner" :size="18" />
                 <ScanText v-else :size="18" />

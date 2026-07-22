@@ -35,6 +35,9 @@ class Settings:
     embedding_model: str = "text-embedding-v4"
     embedding_dimension: int = 1536
     embedding_batch_size: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "10"))
+    # 外部模型请求必须早于问答 PENDING 的 10 分钟回收窗口结束，
+    # 避免供应商连接挂起后持续占用 FastAPI 线程池。
+    model_timeout_seconds: float = float(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
     # 风险审查复用同一个百炼兼容接口和 api-key，只单独配置生成式模型名称。
     review_model: str = os.getenv("REVIEW_MODEL", "qwen-plus")
     # 制度侧先扩大向量召回，再通过专用重排序模型筛选进入 LLM 上下文的候选。

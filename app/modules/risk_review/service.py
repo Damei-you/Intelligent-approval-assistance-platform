@@ -54,6 +54,7 @@ class ReviewModelProvider:
             api_key=SecretStr(settings.api_key),
             base_url=settings.dashscope_base_url,
             temperature=0,
+            timeout=settings.model_timeout_seconds,
             max_retries=2,
         )
 

@@ -124,6 +124,24 @@ export function getRiskReview(reviewRunId) {
   return request(`/api/v1/risk-reviews/${reviewRunId}`)
 }
 
+export function createRiskChatSession(findingId) {
+  return request(`/api/v1/risk-findings/${findingId}/chat-sessions`, {
+    method: 'POST',
+  })
+}
+
+export function getRiskChatSession(sessionId) {
+  return request(`/api/v1/chat-sessions/${sessionId}`)
+}
+
+export function sendRiskChatMessage(sessionId, payload) {
+  return request(`/api/v1/chat-sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function listApprovalCandidates() {
   return request('/api/v1/approvals/candidates')
 }

@@ -39,6 +39,7 @@ class DashScopeEmbeddingProvider:
             base_url=settings.dashscope_base_url,
             chunk_size=settings.embedding_batch_size,
             check_embedding_ctx_length=False,
+            timeout=settings.model_timeout_seconds,
             max_retries=2,
         )
 

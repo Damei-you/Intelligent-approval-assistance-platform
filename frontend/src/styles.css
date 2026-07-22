@@ -37,6 +37,14 @@ button { cursor: pointer; }
 .demo-badge { font-size: 12px; font-weight: 600; color: #7a6119; background: #f4e8b8; border: 1px solid #e8d68d; border-radius: 999px; padding: 7px 11px; }
 .avatar { width: 34px; height: 34px; border-radius: 50%; border: 1px solid #cbd2cc; background: #fff; color: var(--navy); font-size: 11px; font-weight: 700; }
 
+.demo-disclaimer { border-bottom: 1px solid #e5c581; background: #fff5dc; }
+.demo-disclaimer-inner { width: min(1360px, calc(100% - 48px)); min-height: 64px; margin: 0 auto; padding: 11px 6px; display: flex; align-items: center; gap: 12px; color: #765219; }
+.demo-disclaimer-icon { width: 36px; height: 36px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 10px; color: #9b5d0a; background: #f8dfaa; }
+.demo-disclaimer-inner > div { min-width: 0; }
+.demo-disclaimer strong { display: block; color: #6d4306; font-size: 12px; }
+.demo-disclaimer p { margin: 3px 0 0; font-size: 11px; line-height: 1.5; }
+.demo-disclaimer-tag { margin-left: auto; padding: 5px 9px; flex: 0 0 auto; border: 1px solid #dfbb70; border-radius: 999px; color: #825710; background: rgba(255,255,255,.6); font-size: 9px; font-weight: 700; letter-spacing: .06em; }
+
 main { width: min(1360px, calc(100% - 48px)); margin: 0 auto; }
 .hero { padding: 54px 8px 34px; }
 .eyebrow { display: inline-flex; align-items: center; gap: 7px; color: var(--green); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; }
@@ -60,6 +68,11 @@ main { width: min(1360px, calc(100% - 48px)); margin: 0 auto; }
 .section-index { min-width: 28px; height: 28px; display: inline-grid; place-items: center; color: var(--green); border: 1px solid #bad1c4; border-radius: 8px; font-size: 10px; font-weight: 700; }
 h2 { margin: 0; color: var(--navy); font-size: 20px; letter-spacing: -.02em; }
 .section-heading p, .aside-header p { margin: 0; color: var(--muted); font-size: 12px; }
+.data-safety-note { margin: -5px 0 20px; padding: 12px 14px; display: flex; align-items: flex-start; gap: 10px; border: 1px solid #e6c77e; border-radius: 11px; color: #8a5a10; background: #fff7e3; }
+.data-safety-note > svg { margin-top: 1px; flex: 0 0 auto; }
+.data-safety-note > div { display: flex; flex-direction: column; gap: 3px; }
+.data-safety-note strong { color: #70470a; font-size: 11px; }
+.data-safety-note span { font-size: 10px; line-height: 1.55; }
 .mode-tabs { display: inline-flex; gap: 5px; padding: 4px; border: 1px solid #d8ded7; border-radius: 12px; background: #edf0eb; }
 .mode-tabs button { display: flex; align-items: center; gap: 8px; padding: 9px 15px; border: 0; border-radius: 8px; color: #6c756f; background: transparent; font-size: 13px; font-weight: 600; transition: .2s ease; }
 .mode-tabs button.active { color: var(--green); background: white; box-shadow: 0 3px 10px rgba(31, 47, 38, .08); }
@@ -106,6 +119,7 @@ label i, .form-intro i { color: #c56858; font-style: normal; }
 .error-banner svg { flex: 0 0 auto; }
 .submit-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 26px; padding-top: 20px; border-top: 1px solid #e2e6e1; }
 .submit-row > span { display: flex; align-items: center; gap: 6px; color: #8a938d; font-size: 10px; }
+.submit-row > .safety-reminder { color: #9a5b13; font-weight: 700; }
 .primary-button { min-width: 170px; height: 43px; padding: 0 17px; display: flex; justify-content: center; align-items: center; gap: 9px; color: white; background: var(--green); border: 0; border-radius: 11px; font-size: 12px; font-weight: 700; box-shadow: 0 9px 20px rgba(13,107,77,.18); transition: .2s ease; }
 .primary-button:hover:not(:disabled) { transform: translateY(-1px); background: var(--green-dark); box-shadow: 0 12px 24px rgba(13,107,77,.24); }
 .primary-button:disabled { cursor: not-allowed; opacity: .48; box-shadow: none; }
@@ -207,6 +221,8 @@ footer b { color: #b1b8b3; font-weight: 400; }
   .product-nav { margin-left: auto; }.product-nav button { padding: 0 8px; font-size: 9px; }
   .api-status { padding: 7px; }
   .api-status span:last-child { display: none; }
+  .demo-disclaimer-inner { width: min(100% - 24px, 1360px); padding: 12px 0; align-items: flex-start; }
+  .demo-disclaimer-tag { display: none; }
   main, footer { width: min(100% - 24px, 1360px); }
   .hero { padding: 38px 2px 24px; }
   .hero h1 { font-size: 38px; }

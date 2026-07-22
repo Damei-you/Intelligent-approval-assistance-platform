@@ -34,6 +34,9 @@
 | GET | `/api/v1/risk-reviews/contracts` | - | 查询可选择的当前合同版本 |
 | POST | `/api/v1/risk-reviews` | `application/json` | 创建四项异步风险审查 |
 | GET | `/api/v1/risk-reviews/{review_run_id}` | - | 查询审查进度、结论和证据 |
+| POST | `/api/v1/risk-findings/{finding_id}/chat-sessions` | - | 为风险项创建或恢复问答会话 |
+| GET | `/api/v1/chat-sessions/{session_id}` | - | 查询会话、历史消息和回答引用 |
+| POST | `/api/v1/chat-sessions/{session_id}/messages` | `application/json` | 继续询问风险并生成回答或条款草案 |
 
 解析预览使用 HTTP `200 OK`，且 `persisted` 固定为 `false`。确认导入使用 HTTP `201 Created`。重复导入同一个 `contract_no` 时，不创建新合同，而是创建新的合同文档修订版本，并将该版本设为当前版本。
 
@@ -321,6 +324,90 @@ Content-Type: application/json
 docker compose up -d postgres
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/003_risk_review_agent.sql
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/005_policy_reranking.sql
+```
+
+## 风险项多轮问答接口
+
+第一阶段的问答入口绑定在每一项风险结论上，前端按钮文案为“就此风险继续询问”。会话不是
+跨合同的通用聊天：后端从 `finding_id` 反查并固定风险项、所属审查任务和本次审查使用的
+`contract_document_id`，调用方不能在后续消息中切换合同或合同修订版本。即使合同后来产生
+新修订版，历史会话仍使用原审查版本，避免引用内容发生漂移。
+
+### `POST /api/v1/risk-findings/{finding_id}/chat-sessions`
+
+为指定风险项创建或恢复会话。前端打开风险项的问答面板时调用此接口，并保存响应中的
+`session_id`。同一风险项再次打开时返回已有会话及其历史内容，不需要由前端重复创建上下文。
+
+只有所属风险审查已经成功完成的 `finding_id` 才能创建会话。会话上下文自动包含风险结论、风险建议、
+原审查采用的合同/制度证据，以及固定的合同文档修订版本。
+
+### `GET /api/v1/chat-sessions/{session_id}`
+
+查询会话及按时间排序的历史消息。助手消息同时返回可追溯引用；引用指向实际的合同条款或
+制度分块，而不是只保存模型生成的文字。前端可以据此展示引用标签，并展开条款编号、文档标题
+和引用原文。
+
+### `POST /api/v1/chat-sessions/{session_id}/messages`
+
+提交一轮问题：
+
+```json
+{
+  "content": "为什么预付款比例被判断为高风险？",
+  "intent": "EXPLAIN",
+  "client_request_id": "a973ed34-909d-4f9b-b280-a8aa2dbecb34"
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `content` | 是 | 本轮用户问题 |
+| `intent` | 否 | `AUTO`、`EXPLAIN`、`EVIDENCE_QUERY` 或 `DRAFT_CLAUSE`；省略时默认为 `AUTO` |
+| `client_request_id` | 是 | 客户端为本轮请求生成的 UUID；重试时必须复用完全相同的问题和意图 |
+
+`intent` 的处理边界如下：
+
+- `AUTO`：由后端根据用户问题选择下面三种处理方式，适合自由输入。
+- `EXPLAIN`：解释已有风险结论，优先复用原审查保存的结论与证据，不重新改变风险等级。
+- `EVIDENCE_QUERY`：查询相关合同条款和制度依据；合同检索范围固定在会话绑定的
+  `contract_document_id`，引用必须回查数据库中的真实分块。
+- `DRAFT_CLAUSE`：结合原条款、风险建议和制度依据生成修改草案，并返回目标条款、建议文本、
+  修改说明、理由和引用等结构化内容。
+
+第一阶段仅实现短期上下文：每次生成回答时携带当前风险上下文和最近 10 条已成功历史消息，
+并恢复这些消息中的结构化草案及“当轮引用标签 → 引用原文”快照，因此可以理解“上一版草案”
+或“刚才 P2”之类的指代。更早消息仍保存在数据库中并可由查询接口展示，但不自动放入模型
+上下文。暂不生成长期摘要，也不实现跨风险项、跨合同的用户偏好记忆。
+
+模型返回的引用标签必须由后端校验，并转换为 `chat_message_citations` 中的真实分块引用。
+后端不会在模型漏引或伪造标签时自动补成 `C1/P1`；无效引用和无效草案目标会被阻止展示。
+如果候选材料确实不足，模型必须显式返回 `insufficient_evidence=true`，此时可以保留一条说明
+缺少哪些材料的零引用回答，但不能同时返回条款草案。
+解释既有结论只使用审查当时的证据快照；依据查询和草案生成可以检索当前有效制度，提示词会
+明确区分“审查结论原始依据”和“当前有效制度”，避免把不同时间范围的制度混为一谈。
+追问“上一版草案”或“刚才 P2”时会把上一轮真实引用恢复为本轮候选；普通的历史风险结论解释
+仍只使用原审查快照，不会因出现“之前”等时间指代而引入当前制度。
+条款修改草案只作为助手消息的结构化结果保存和展示，不写回合同正文、不创建合同修订版，
+也不会自动提交、通过、退回或驳回任何审批。用户需要在现有合同编辑和审批流程中人工确认。
+
+同一会话同一时间只生成一轮回答。前端遇到 `PENDING` 会自动查询会话并替换占位消息；服务
+进程中断留下的 `PENDING` 超过 10 分钟后会转为 `FAILED`，随后可以重新发送。相同
+`client_request_id` 携带不同内容或意图时返回 `409 CHAT_IDEMPOTENCY_CONFLICT`。
+聊天模型和 Embedding 默认 60 秒请求超时，可通过 `MODEL_TIMEOUT_SECONDS` 调整，但应明显
+小于 10 分钟的占位回收时间。
+
+| HTTP 状态 | 典型错误码 | 说明 |
+|---|---|---|
+| `404` | `FINDING_NOT_FOUND`、`CHAT_SESSION_NOT_FOUND`、`CHAT_TURN_NOT_FOUND` | 风险项、会话或消息不存在 |
+| `409` | `REVIEW_NOT_READY`、`CHAT_TURN_IN_PROGRESS`、`CHAT_IDEMPOTENCY_CONFLICT`、`CHAT_TURN_EXPIRED` | 审查未完成、已有回答在生成、幂等键冲突或本轮已超时 |
+| `422` | `CHAT_MODEL_NOT_CONFIGURED` 或 FastAPI 校验详情 | 未配置模型，或请求字段不符合约束 |
+| `500` | `CHAT_INTERNAL_ERROR` | 数据库或框架异常的脱敏兜底响应 |
+| `502` | `CHAT_GENERATION_FAILED` | 模型、Embedding 或重排序调用失败 |
+
+已有演示数据库还需要执行问答字段迁移；新建数据卷会直接使用初始化脚本中的最新结构：
+
+```powershell
+docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/006_contract_chat.sql
 ```
 
 ## 辅助审批接口
