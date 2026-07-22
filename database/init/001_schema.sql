@@ -262,6 +262,12 @@ CREATE TABLE retrieval_runs (
     query_embedding_model VARCHAR(128),
     filters JSONB NOT NULL DEFAULT '{}'::JSONB,
     top_k INTEGER NOT NULL DEFAULT 5 CHECK (top_k > 0),
+    final_top_k INTEGER CHECK (final_top_k IS NULL OR final_top_k > 0),
+    ranking_strategy VARCHAR(32) NOT NULL DEFAULT 'VECTOR'
+        CHECK (ranking_strategy IN ('VECTOR', 'RERANK', 'RERANK_FALLBACK')),
+    rerank_model VARCHAR(128),
+    rerank_latency_ms INTEGER CHECK (rerank_latency_ms IS NULL OR rerank_latency_ms >= 0),
+    rerank_error TEXT,
     latency_ms INTEGER CHECK (latency_ms IS NULL OR latency_ms >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -272,6 +278,8 @@ CREATE TABLE retrieval_hits (
     chunk_id UUID NOT NULL REFERENCES document_chunks(id),
     rank_no INTEGER NOT NULL CHECK (rank_no > 0),
     similarity_score NUMERIC(8, 6) NOT NULL,
+    rerank_rank_no INTEGER CHECK (rerank_rank_no IS NULL OR rerank_rank_no > 0),
+    rerank_score DOUBLE PRECISION,
     selected_for_context BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (retrieval_run_id, rank_no),

@@ -199,7 +199,9 @@ DRAFT -> PARSING -> READY -> REVIEWING -> PENDING_APPROVAL
 
 #### `retrieval_runs` 与 `retrieval_hits`
 
-分别记录检索请求和命中结果，包括查询文本、过滤条件、Top K、排名、相似度，以及最终是否被送入模型上下文。
+分别记录检索请求和命中结果。`retrieval_runs` 保存候选 Top K、最终 Top K、排名策略、
+重排模型、耗时与降级错误；`retrieval_hits` 同时保存向量排名/相似度、重排排名/分数，
+以及最终是否被送入模型上下文。合同侧只写向量排名，制度侧可以完整对比重排前后变化。
 
 #### `llm_calls`
 
@@ -224,8 +226,9 @@ flowchart TD
     A[创建 review_runs] --> B[创建 workflow_runs]
     B --> C[加载适用检查项]
     C --> D[为检查项检索合同条款]
-    D --> E[检索制度规定]
-    E --> F[调用 LLM 生成结论]
+    D --> E[向量召回制度 Top 10]
+    E --> R[制度重排序取 Top 5]
+    R --> F[调用 LLM 生成结论]
     F --> G[写入 risk_findings]
     G --> H[写入 finding_evidence]
     H --> I{还有检查项}
@@ -236,11 +239,16 @@ flowchart TD
 
 `workflow_*`、`retrieval_*`、`llm_calls` 是技术追踪数据；`review_runs`、`risk_findings`、`finding_evidence` 是稳定的业务结果。即使以后清理部分详细运行日志，也不会影响审批报告。
 
+风险审查详情会利用 `retrieval_runs` 和 `retrieval_hits` 恢复每个检查项当时实际召回的
+合同、制度候选，并通过 `finding_evidence` 标记最终是否采纳。前端因此可以同时展示
+“检索候选”和“有效证据”，历史审查无需重新调用模型。
+
 ## 6. 初始化脚本
 
 | 文件 | 用途 |
 |---|---|
 | `database/init/001_schema.sql` | 创建扩展、20 张表、索引、约束和触发器 |
 | `database/init/002_seed.sql` | 初始化两种合同类型和六个风险检查项 |
+| `database/migrations/005_policy_reranking.sql` | 为已有数据库增加重排序追踪字段 |
 
 初始化脚本由 `compose.yaml` 只读挂载到 `/docker-entrypoint-initdb.d`，仅在数据库数据卷首次创建时自动执行。

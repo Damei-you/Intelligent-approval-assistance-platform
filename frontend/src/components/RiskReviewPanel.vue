@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AlertTriangle,
   ArrowRight,
@@ -40,19 +40,36 @@ const insufficientCount = computed(() => review.value?.findings?.filter((item) =
 
 onMounted(loadContracts)
 onBeforeUnmount(stopPolling)
+watch(selectedContractId, loadLatestReview)
 
 async function loadContracts() {
   loadingContracts.value = true
   errorMessage.value = ''
   try {
+    const previousContractId = selectedContractId.value
     contracts.value = await listReviewContracts()
     if (!selectedContractId.value && contracts.value.length) {
       selectedContractId.value = contracts.value.find((item) => item.review_ready)?.contract_id || contracts.value[0].contract_id
+    }
+    if (selectedContractId.value && selectedContractId.value === previousContractId) {
+      await loadLatestReview()
     }
   } catch (error) {
     errorMessage.value = error.message || '合同列表加载失败。'
   } finally {
     loadingContracts.value = false
+  }
+}
+
+async function loadLatestReview() {
+  stopPolling()
+  review.value = null
+  errorMessage.value = ''
+  const latestReviewRunId = selectedContract.value?.latest_review_run_id
+  if (!latestReviewRunId) return
+  await refreshReview(latestReviewRunId)
+  if (['PENDING', 'RUNNING'].includes(review.value?.status)) {
+    pollingTimer = window.setInterval(() => refreshReview(latestReviewRunId), 1500)
   }
 }
 
@@ -64,6 +81,11 @@ async function startReview() {
   errorMessage.value = ''
   try {
     const created = await createRiskReview(selectedContractId.value)
+    if (selectedContract.value) {
+      selectedContract.value.latest_review_run_id = created.review_run_id
+      selectedContract.value.latest_review_status = 'PENDING'
+      selectedContract.value.latest_review_is_current = true
+    }
     await refreshReview(created.review_run_id)
     pollingTimer = window.setInterval(() => refreshReview(created.review_run_id), 1500)
   } catch (error) {
@@ -113,6 +135,14 @@ function suggestionText(value) {
     APPROVE_AFTER_REVISION: '建议修改后审批',
     REJECT: '建议拒绝',
   }[value] || '等待汇总'
+}
+
+function candidatesFor(finding, evidenceType) {
+  return finding.retrieval_candidates?.filter((item) => item.evidence_type === evidenceType) || []
+}
+
+function formatSimilarity(value) {
+  return Number(value || 0).toFixed(4)
 }
 </script>
 
@@ -188,6 +218,36 @@ function suggestionText(value) {
             </div>
             <p class="finding-description">{{ finding.description }}</p>
             <div v-if="finding.suggestion" class="finding-suggestion"><Scale :size="16" /><span><b>修改建议</b>{{ finding.suggestion }}</span></div>
+            <details v-if="finding.retrieval_candidates?.length" class="retrieval-candidates" open>
+              <summary>
+                <span><FileSearch :size="15" />本项检索候选</span>
+                <small>合同 {{ candidatesFor(finding, 'CONTRACT').length }} 条 · 制度 {{ candidatesFor(finding, 'POLICY').length }} 条</small>
+              </summary>
+              <p class="candidate-explanation">合同保持向量 Top 3；制度先向量召回 Top 10，再重排取 Top 5 进入模型上下文。“已采纳”表示模型最终引用且后端已经保存。</p>
+              <div class="candidate-grid">
+                <section>
+                  <h4><FileSearch :size="14" />合同候选</h4>
+                  <article v-for="item in candidatesFor(finding, 'CONTRACT')" :key="item.chunk_id" :class="{ selected: item.selected_as_evidence }">
+                    <div><b>#{{ item.rank_no }}</b><span>{{ item.clause_no }} {{ item.title }}</span><em>{{ formatSimilarity(item.similarity_score) }}</em><i v-if="item.selected_as_evidence">已采纳</i></div>
+                    <p>{{ item.content }}</p>
+                  </article>
+                </section>
+                <section>
+                  <h4><BookOpen :size="14" />制度候选</h4>
+                  <article v-for="item in candidatesFor(finding, 'POLICY')" :key="item.chunk_id" :class="{ selected: item.selected_as_evidence, contextual: item.selected_for_context }">
+                    <div>
+                      <b>向量 #{{ item.rank_no }}</b>
+                      <b v-if="item.rerank_rank_no" class="rerank-rank">重排 #{{ item.rerank_rank_no }}</b>
+                      <span>{{ item.document_title }} · {{ item.clause_no }} {{ item.title }}</span>
+                      <em>V {{ formatSimilarity(item.similarity_score) }}<template v-if="item.rerank_score !== null && item.rerank_score !== undefined"> · R {{ formatSimilarity(item.rerank_score) }}</template></em>
+                      <i v-if="item.selected_for_context" class="context-badge">入选</i>
+                      <i v-if="item.selected_as_evidence">已采纳</i>
+                    </div>
+                    <p>{{ item.content }}</p>
+                  </article>
+                </section>
+              </div>
+            </details>
             <div class="evidence-grid">
               <div class="evidence-column">
                 <h4><FileSearch :size="15" />合同条款</h4>
@@ -250,10 +310,11 @@ function suggestionText(value) {
 .finding-list { margin-top: 18px; display: flex; flex-direction: column; gap: 13px; }.finding-card { padding: 18px; border: 1px solid #dde3dd; border-left: 4px solid #bdc8c0; border-radius: 12px; background: white; }.finding-card.risk { border-left-color: #bd5149; }.finding-card.pass { border-left-color: var(--green); }.finding-card.insufficient_information { border-left-color: #d3a83e; }
 .finding-header { display: flex; align-items: center; gap: 11px; }.finding-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; color: #a76c2c; background: #f7ead8; }.finding-card.pass .finding-icon { color: var(--green); background: #e4f0e8; }.finding-header > div:nth-child(2) { flex: 1; }.finding-header small { color: #8a958e; font-size: 8px; }.finding-header h3 { margin: 3px 0 0; color: var(--navy); font-size: 13px; }.finding-badges { display: flex; gap: 6px; }.finding-badges b, .finding-badges em { padding: 5px 7px; border-radius: 6px; font-size: 8px; font-style: normal; }.finding-badges b { color: #8e443e; background: #fae9e7; }.finding-badges em { color: #876526; background: #f7edda; }
 .finding-description { margin: 14px 0; color: #58675f; font-size: 10px; line-height: 1.7; }.finding-suggestion { padding: 10px 12px; display: flex; gap: 8px; border-radius: 8px; color: var(--green); background: #e9f1eb; }.finding-suggestion span { display: flex; flex-direction: column; gap: 3px; color: #5e7568; font-size: 9px; line-height: 1.5; }.finding-suggestion b { color: var(--green); }
+.retrieval-candidates { margin-top: 13px; border: 1px solid #dce4dd; border-radius: 10px; overflow: hidden; background: #fafbf9; }.retrieval-candidates summary { padding: 11px 13px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--navy); cursor: pointer; list-style: none; }.retrieval-candidates summary::-webkit-details-marker { display: none; }.retrieval-candidates summary > span { display: flex; align-items: center; gap: 7px; font-size: 9px; font-weight: 700; }.retrieval-candidates summary small { color: #849088; font-size: 8px; }.candidate-explanation { margin: 0; padding: 0 13px 10px; color: #8b958f; font-size: 8px; }.candidate-grid { padding: 0 10px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }.candidate-grid section { padding: 10px; border-radius: 8px; background: #f1f4f1; }.candidate-grid h4 { margin: 0 0 8px; display: flex; align-items: center; gap: 6px; color: var(--navy); font-size: 9px; }.candidate-grid article { margin-top: 6px; padding: 8px; border: 1px solid #dfe5df; border-radius: 7px; background: white; }.candidate-grid article.contextual { border-color: #c5d8ca; }.candidate-grid article.selected { border-color: #8fbaa0; box-shadow: inset 2px 0 var(--green); }.candidate-grid article > div { display: flex; align-items: center; gap: 5px; }.candidate-grid article b { color: #809087; font-size: 8px; white-space: nowrap; }.candidate-grid article b.rerank-rank { color: #9a6b20; }.candidate-grid article span { min-width: 0; flex: 1; overflow: hidden; color: var(--green); font-size: 8px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }.candidate-grid article em { color: #89958e; font-size: 7px; font-style: normal; white-space: nowrap; }.candidate-grid article i { padding: 2px 5px; border-radius: 8px; color: white; background: var(--green); font-size: 7px; font-style: normal; white-space: nowrap; }.candidate-grid article i.context-badge { color: #7b5d1b; background: #f1dfaa; }.candidate-grid article p { margin: 5px 0 0; color: #68756e; font-size: 8px; line-height: 1.5; }
 .evidence-grid { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }.evidence-column { padding: 12px; border-radius: 9px; background: #f3f6f3; }.evidence-column.policy { background: #f2f5ed; }.evidence-column h4 { margin: 0 0 9px; display: flex; align-items: center; gap: 6px; color: var(--navy); font-size: 9px; }.evidence-column blockquote { margin: 7px 0 0; padding: 9px; border: 1px solid #e0e6e0; border-radius: 7px; background: white; }.evidence-column blockquote span { color: var(--green); font-size: 8px; font-weight: 700; }.evidence-column blockquote p { margin: 5px 0 0; color: #5d6963; font-size: 9px; line-height: 1.55; }.no-evidence { color: #9b8a69; font-size: 9px; }
 .review-empty { min-height: 290px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #86928a; }.review-empty strong { margin-top: 12px; color: var(--navy); font-size: 12px; }.review-empty p { margin: 7px 0; font-size: 9px; }
 .review-summary { padding: 28px 23px; border-left: 1px solid #d8dfd8; background: #eef3ee; }.risk-orb { width: 132px; height: 132px; margin: 28px auto 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid #cdd9d0; border-radius: 50%; color: #718178; background: rgba(255,255,255,.65); }.risk-orb strong { margin-top: 6px; color: var(--navy); font-size: 15px; }.risk-orb span { margin-top: 3px; font-size: 8px; }.risk-orb.high { color: #b74f47; border-color: #e0aca8; background: #f8e6e4; }.risk-orb.medium { color: #a77b23; border-color: #e6cf93; background: #f8f0da; }.risk-orb.low { color: var(--green); border-color: #a9c8b3; background: #e1efe6; }
 .summary-stats { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid #d7dfd8; border-radius: 9px; overflow: hidden; }.summary-stats div { padding: 11px 5px; display: flex; flex-direction: column; align-items: center; gap: 3px; background: rgba(255,255,255,.52); }.summary-stats div + div { border-left: 1px solid #d7dfd8; }.summary-stats strong { color: var(--navy); font-size: 14px; }.summary-stats span { color: #849087; font-size: 8px; }.approval-advice { margin-top: 14px; padding: 14px; border-radius: 10px; color: white; background: var(--green); }.approval-advice span { font-size: 8px; opacity: .72; }.approval-advice strong { margin-top: 4px; display: block; font-size: 13px; }.approval-advice p { margin: 8px 0 0; font-size: 8px; line-height: 1.6; opacity: .78; }.summary-note { margin-top: 14px; padding: 12px; display: flex; gap: 8px; color: var(--green); background: #dde9e1; border-radius: 9px; }.summary-note p { margin: 0; display: flex; flex-direction: column; gap: 3px; }.summary-note b { font-size: 9px; }.summary-note span { color: #687c70; font-size: 8px; line-height: 1.5; }
 @media (max-width: 980px) { .review-hero-row { align-items: flex-start; flex-direction: column; }.review-dashboard { grid-template-columns: 1fr; }.review-summary { border-left: 0; border-top: 1px solid #d8dfd8; }.contract-picker-row { grid-template-columns: 1fr 1fr; }.contract-select { grid-column: 1 / -1; } }
-@media (max-width: 680px) { .review-page { width: min(100% - 24px, 1360px); }.review-hero { padding-top: 38px; }.agent-chip { width: 100%; }.review-launch-card, .review-main-column, .review-summary { padding: 20px 17px; }.contract-picker-row, .check-overview, .evidence-grid { grid-template-columns: 1fr; }.review-start-button, .contract-readiness { width: 100%; }.review-section-heading { align-items: flex-start; flex-direction: column; }.finding-header { align-items: flex-start; flex-wrap: wrap; }.finding-badges { margin-left: 45px; } }
+@media (max-width: 680px) { .review-page { width: min(100% - 24px, 1360px); }.review-hero { padding-top: 38px; }.agent-chip { width: 100%; }.review-launch-card, .review-main-column, .review-summary { padding: 20px 17px; }.contract-picker-row, .check-overview, .evidence-grid, .candidate-grid { grid-template-columns: 1fr; }.review-start-button, .contract-readiness { width: 100%; }.review-section-heading { align-items: flex-start; flex-direction: column; }.finding-header { align-items: flex-start; flex-wrap: wrap; }.finding-badges { margin-left: 45px; } }
 </style>

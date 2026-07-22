@@ -17,6 +17,7 @@ from app.modules.approval.schemas import ApprovalActionRequest
 from app.modules.contract_import.repository import ContractImportRepository
 from app.modules.contract_import.schemas import ContractJsonImportRequest
 from app.modules.contract_import.service import ContractImportService
+from app.modules.risk_review.repository import RiskReviewRepository
 
 
 @unittest.skipUnless(
@@ -61,12 +62,13 @@ class ApprovalIntegrationTests(unittest.TestCase):
                 check_item = connection.execute(
                     "SELECT id FROM review_check_items WHERE code = 'PAYMENT_TERMS'"
                 ).fetchone()
-                connection.execute(
+                finding = connection.execute(
                     """
                     INSERT INTO risk_findings (
                         review_run_id, check_item_id, status, severity,
                         title, description, suggestion
                     ) VALUES (%s, %s, 'RISK', 'MEDIUM', %s, %s, %s)
+                    RETURNING id
                     """,
                     (
                         self.review_run_id,
@@ -75,6 +77,56 @@ class ApprovalIntegrationTests(unittest.TestCase):
                         "合同付款约定与制度存在偏差。",
                         "调整付款节点后再审批。",
                     ),
+                ).fetchone()
+                chunk = connection.execute(
+                    "SELECT id, content FROM document_chunks WHERE document_id = %s",
+                    (self.document_id,),
+                ).fetchone()
+                workflow_run_id = uuid4()
+                node_run_id = uuid4()
+                retrieval_run_id = uuid4()
+                connection.execute(
+                    """
+                    INSERT INTO workflow_runs (
+                        id, run_type, review_run_id, graph_name,
+                        graph_version, status
+                    ) VALUES (%s, 'RISK_REVIEW', %s, 'contract_risk_review', '1.0', 'SUCCEEDED')
+                    """,
+                    (workflow_run_id, self.review_run_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workflow_node_runs (
+                        id, workflow_run_id, node_name, sequence_no, status
+                    ) VALUES (%s, %s, 'payment_terms', 1, 'SUCCEEDED')
+                    """,
+                    (node_run_id, workflow_run_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO retrieval_runs (
+                        id, node_run_id, query_text, query_embedding_model, top_k
+                    ) VALUES (%s, %s, '付款条款', 'text-embedding-v4', 1)
+                    """,
+                    (retrieval_run_id, node_run_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO retrieval_hits (
+                        retrieval_run_id, chunk_id, rank_no,
+                        similarity_score, selected_for_context
+                    ) VALUES (%s, %s, 1, 0.88, TRUE)
+                    """,
+                    (retrieval_run_id, chunk["id"]),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO finding_evidence (
+                        finding_id, chunk_id, evidence_type,
+                        relevance_score, cited_text, sort_order
+                    ) VALUES (%s, %s, 'CONTRACT', 0.88, %s, 1)
+                    """,
+                    (finding["id"], chunk["id"], chunk["content"]),
                 )
 
     def tearDown(self) -> None:
@@ -85,7 +137,16 @@ class ApprovalIntegrationTests(unittest.TestCase):
                     "DELETE FROM async_jobs WHERE resource_id = %s",
                     (self.document_id,),
                 )
-                # contracts 的级联外键会一并清理测试创建的审查、审批和节点记录。
+                # finding_evidence 和 retrieval_hits 同时引用条款与审查链路。先删除审批、
+                # 再删除审查，可让审查侧级联完整结束，最后再删除合同及其条款。
+                connection.execute(
+                    "DELETE FROM approval_instances WHERE contract_id = %s",
+                    (self.contract_id,),
+                )
+                connection.execute(
+                    "DELETE FROM review_runs WHERE contract_id = %s",
+                    (self.contract_id,),
+                )
                 connection.execute(
                     "DELETE FROM contracts WHERE id = %s",
                     (self.contract_id,),
@@ -204,6 +265,27 @@ class ApprovalIntegrationTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             ApprovalActionRequest(approver_name="业务审批人", decision="REJECTED")
+
+    def test_review_detail_restores_retrieval_candidates_and_latest_review(self) -> None:
+        """历史审查应恢复检索候选，并在合同列表中标记为最近一次审查。"""
+
+        repository = RiskReviewRepository()
+        detail = repository.get_review_detail(self.review_run_id)
+        payment = next(
+            finding for finding in detail.findings if finding.check_code == "PAYMENT_TERMS"
+        )
+
+        self.assertEqual(1, len(payment.retrieval_candidates))
+        self.assertEqual("CONTRACT", payment.retrieval_candidates[0].evidence_type)
+        self.assertTrue(payment.retrieval_candidates[0].selected_as_evidence)
+        self.assertEqual("验收后付款。", payment.retrieval_candidates[0].content)
+
+        contract = next(
+            row for row in repository.list_contracts() if row["contract_id"] == self.contract_id
+        )
+        self.assertEqual(self.review_run_id, contract["latest_review_run_id"])
+        self.assertEqual("SUCCEEDED", contract["latest_review_status"])
+        self.assertTrue(contract["latest_review_is_current"])
 
 
 async def _asgi_request(

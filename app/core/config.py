@@ -37,6 +37,16 @@ class Settings:
     embedding_batch_size: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "10"))
     # 风险审查复用同一个百炼兼容接口和 api-key，只单独配置生成式模型名称。
     review_model: str = os.getenv("REVIEW_MODEL", "qwen-plus")
+    # 制度侧先扩大向量召回，再通过专用重排序模型筛选进入 LLM 上下文的候选。
+    # 重排序接口不是 OpenAI 兼容接口，因此使用独立的服务地址。
+    rerank_model: str = os.getenv("RERANK_MODEL", "qwen3-rerank")
+    rerank_url: str = os.getenv(
+        "RERANK_URL",
+        "https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
+    )
+    rerank_timeout_seconds: float = float(os.getenv("RERANK_TIMEOUT_SECONDS", "20"))
+    policy_recall_top_k: int = int(os.getenv("POLICY_RECALL_TOP_K", "10"))
+    policy_final_top_k: int = int(os.getenv("POLICY_FINAL_TOP_K", "5"))
     cors_origins: tuple[str, ...] = tuple(
         origin.strip()
         for origin in os.getenv(

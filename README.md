@@ -4,7 +4,10 @@
 
 当前仓库已提供 PostgreSQL/pgvector 容器及数据库初始化脚本。数据库包含合同知识库、风险检查、两级审批、合同问答、LangGraph 可观测记录和 Celery 任务记录等表。
 
-风险审查智能体已实现付款、质保、违约责任和争议解决四项并行 RAG 检查。审查通过 Celery 异步执行 LangGraph 四分支工作流，每项结论均保存合同条款与制度依据，四项结束后统一汇总，前端提供进度、汇总和证据对照展示。
+风险审查智能体已实现付款、质保、违约责任和争议解决四项并行 RAG 检查。合同侧保持
+向量 Top 3；制度侧向量召回 Top 10，经 `qwen3-rerank` 重排序后取 Top 5。审查通过
+Celery 异步执行 LangGraph 四分支工作流，每项结论均保存合同条款、制度依据和重排轨迹，
+四项结束后统一汇总，前端提供进度、汇总和证据对照展示。
 
 辅助审批已实现固定两级人工流程：业务审批通过后进入法务审批，两级均通过后合同批准；
 任一级可退回修改或驳回。审批页面会展示风险审查摘要和 AI 建议，但最终决定、操作人和
@@ -60,6 +63,7 @@ PostgreSQL 官方镜像只会在空数据目录上运行初始化脚本。后续
 docker compose up -d postgres
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/003_risk_review_agent.sql
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/004_approval_unique_review.sql
+docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/005_policy_reranking.sql
 ```
 
 完整表结构说明见 [docs/database-design.md](docs/database-design.md)。

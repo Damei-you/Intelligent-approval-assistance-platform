@@ -34,7 +34,11 @@ from app.modules.policy_import.repository import PolicyImportRepository  # noqa:
 from app.modules.policy_import.schemas import PolicyJsonImportRequest  # noqa: E402
 from app.modules.policy_import.service import PolicyImportService  # noqa: E402
 from app.modules.risk_review.repository import RiskReviewRepository  # noqa: E402
-from app.modules.risk_review.service import CHECK_QUERIES, RiskReviewService  # noqa: E402
+from app.modules.risk_review.service import (  # noqa: E402
+    CHECK_QUERIES,
+    DashScopeRerankProvider,
+    RiskReviewService,
+)
 from app.modules.vectorization.service import (  # noqa: E402
     DashScopeEmbeddingProvider,
     VectorizationRepository,
@@ -369,8 +373,10 @@ def evaluate_retrieval(
     resources: dict[str, Any],
     contract_top_k: int,
     policy_top_k: int,
+    policy_rerank: bool = False,
+    policy_final_top_k: int = 5,
 ) -> dict[str, Any]:
-    """调用真实 Embedding 和 pgvector 检索，计算四项检查的排序指标。"""
+    """调用真实检索；可选择仅对制度候选执行与审查链路相同的重排序。"""
 
     _require_vectorized(resources)
     provider = DashScopeEmbeddingProvider()
@@ -378,6 +384,7 @@ def evaluate_retrieval(
     started = time.perf_counter()
     vectors = provider.embed_documents(queries)
     repository = RiskReviewRepository()
+    rerank_provider = DashScopeRerankProvider() if policy_rerank else None
     judgement_by_type = {
         item["check_code"]: item for item in dataset.judgements["queries"]
     }
@@ -387,6 +394,11 @@ def evaluate_retrieval(
             resources["contract_document_id"], vector, top_k=contract_top_k
         )
         policy_hits = repository.search_policy_chunks(vector, top_k=policy_top_k)
+        policy_candidate_hits = policy_hits
+        if rerank_provider is not None:
+            policy_hits = rerank_provider.rerank(
+                CHECK_QUERIES[check_type], policy_candidate_hits, policy_final_top_k
+            ).selected_hits
         judgement = judgement_by_type[check_type]
         contract_grades = _grades_for_query(
             judgement, "contract_judgements", "clause_no"
@@ -400,6 +412,7 @@ def evaluate_retrieval(
         policy_ranked = [
             _ranked_id(hit, resources["policy_document_id"]) for hit in policy_hits
         ]
+        policy_metric_k = policy_final_top_k if policy_rerank else policy_top_k
         items.append(
             {
                 "check_type": check_type,
@@ -417,12 +430,21 @@ def evaluate_retrieval(
                     ],
                 },
                 "policy": {
-                    "k": policy_top_k,
-                    "metrics": ranking_metrics(policy_ranked, policy_grades, policy_top_k),
+                    "candidate_k": policy_top_k,
+                    "k": policy_metric_k,
+                    "metrics": ranking_metrics(
+                        policy_ranked, policy_grades, policy_metric_k
+                    ),
                     "hits": [
                         _serialize_hit(hit, policy_grades, resources["policy_document_id"])
                         for hit in policy_hits
                     ],
+                    "vector_candidates": [
+                        _serialize_hit(
+                            hit, policy_grades, resources["policy_document_id"]
+                        )
+                        for hit in policy_candidate_hits
+                    ] if policy_rerank else [],
                 },
             }
         )
@@ -436,8 +458,9 @@ def evaluate_retrieval(
             for metric in ("recall_at_k", "precision_at_k", "mrr", "ndcg_at_k")
         }
     return {
-        "ranking": "vector_baseline",
+        "ranking": "policy_rerank" if policy_rerank else "vector_baseline",
         "embedding_model": "text-embedding-v4",
+        "rerank_model": settings.rerank_model if policy_rerank else None,
         "duration_ms": round((time.perf_counter() - started) * 1000, 2),
         "aggregate": aggregate,
         "checks": items,
@@ -458,7 +481,7 @@ def _serialize_hit(
     """只保存排名所需元数据，避免把完整合同正文写进评测报告。"""
 
     item_id = _ranked_id(hit, expected_document_id)
-    return {
+    payload = {
         "chunk_id": str(hit["id"]),
         "document_id": str(hit["document_id"]),
         "document_title": hit["document_title"],
@@ -467,6 +490,11 @@ def _serialize_hit(
         "similarity_score": round(float(hit["similarity_score"]), 6),
         "relevance": grades.get(item_id, 0),
     }
+    if hit.get("rerank_rank_no") is not None:
+        payload["vector_rank_no"] = hit.get("vector_rank_no")
+        payload["rerank_rank_no"] = hit["rerank_rank_no"]
+        payload["rerank_score"] = round(float(hit["rerank_score"]), 6)
+    return payload
 
 
 def _latest_successful_review(contract_id: UUID) -> UUID | None:
@@ -806,6 +834,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--contract-top-k", type=int, default=20)
     parser.add_argument("--policy-top-k", type=int, default=30)
+    parser.add_argument(
+        "--policy-rerank",
+        action="store_true",
+        help="对制度候选调用项目当前配置的重排序模型，合同侧保持向量检索",
+    )
+    parser.add_argument("--policy-final-top-k", type=int, default=5)
     parser.add_argument("--timeout", type=int, default=600, help="异步任务等待秒数")
     parser.add_argument(
         "--output-dir", type=Path, default=PROJECT_ROOT / "output" / "evaluation"
@@ -821,8 +855,14 @@ def main(argv: list[str] | None = None) -> int:
     """命令行入口；返回值可直接供 CI 判断评测是否通过。"""
 
     args = build_parser().parse_args(argv)
-    if args.contract_top_k <= 0 or args.policy_top_k <= 0:
+    if (
+        args.contract_top_k <= 0
+        or args.policy_top_k <= 0
+        or args.policy_final_top_k <= 0
+    ):
         raise ValueError("top-k 必须大于 0")
+    if args.policy_final_top_k > args.policy_top_k:
+        raise ValueError("--policy-final-top-k 不能大于 --policy-top-k")
     needs_external_calls = args.prepare or args.mode in {"retrieval", "all"} or args.start_review
     if args.start_review and args.mode not in {"e2e", "all"}:
         raise ValueError("--start-review 只能和 --mode e2e 或 all 一起使用")
@@ -855,7 +895,12 @@ def main(argv: list[str] | None = None) -> int:
     if validation["passed"] and args.mode in {"retrieval", "all"}:
         assert resources is not None
         report["retrieval"] = evaluate_retrieval(
-            dataset, resources, args.contract_top_k, args.policy_top_k
+            dataset,
+            resources,
+            args.contract_top_k,
+            args.policy_top_k,
+            args.policy_rerank,
+            args.policy_final_top_k,
         )
     if validation["passed"] and args.mode in {"e2e", "all"}:
         assert resources is not None

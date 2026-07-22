@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from operator import add
+from time import perf_counter
 from typing import Annotated, Any, TypedDict
 from uuid import UUID
 
+import httpx
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
@@ -93,6 +96,111 @@ class ReviewModelProvider:
         }
 
 
+@dataclass(slots=True)
+class PolicyRerankResult:
+    """保存制度候选的重排结果，以及用于技术追踪的耗时。"""
+
+    selected_hits: list[dict[str, Any]]
+    all_hits: list[dict[str, Any]]
+    latency_ms: int
+
+
+class DashScopeRerankProvider:
+    """调用百炼专用文本重排序接口，只处理制度候选。"""
+
+    def __init__(
+        self,
+        client: httpx.Client | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self.api_key = api_key or settings.api_key
+        if not self.api_key:
+            raise RiskReviewError(
+                "RERANK_MODEL_NOT_CONFIGURED",
+                "未配置 api-key 环境变量，无法执行制度重排序。",
+            )
+        # httpx.Client 会复用 HTTPS 连接；同一个 Celery 任务的四个 LangGraph 分支可并发使用。
+        self.client = client or httpx.Client(timeout=settings.rerank_timeout_seconds)
+
+    def rerank(
+        self,
+        query: str,
+        hits: list[dict[str, Any]],
+        final_top_k: int,
+    ) -> PolicyRerankResult:
+        """对向量召回结果重新评分，返回按重排顺序筛出的上下文候选。"""
+
+        if not hits:
+            return PolicyRerankResult([], [], 0)
+        documents = [_build_rerank_document(hit) for hit in hits]
+        started_at = perf_counter()
+        # qwen3-rerank 使用兼容 Rerank API，query/documents/top_n 位于请求体顶层。
+        # 与已停用的 gte-rerank-v2 相比，其响应 results 也直接位于顶层。
+        request_body = {
+            "model": settings.rerank_model,
+            "query": query,
+            "documents": documents,
+            "top_n": len(documents),
+            "instruct": "Given a contract risk query, retrieve relevant enterprise policy clauses.",
+        }
+        response = self.client.post(
+            settings.rerank_url,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            # 请求返回全部候选的得分，便于持久化并对比向量排名与重排排名。
+            json=request_body,
+        )
+        response.raise_for_status()
+        latency_ms = round((perf_counter() - started_at) * 1000)
+        payload = response.json()
+        raw_results = payload.get("results")
+        if not isinstance(raw_results, list) or not raw_results:
+            raise ValueError("重排序接口未返回有效 results。")
+
+        candidates = [
+            {
+                **hit,
+                "vector_rank_no": index,
+                "rerank_rank_no": None,
+                "rerank_score": None,
+                "selected_for_context": False,
+            }
+            for index, hit in enumerate(hits, 1)
+        ]
+        ordered: list[dict[str, Any]] = []
+        seen_indexes: set[int] = set()
+        for rerank_position, item in enumerate(raw_results, 1):
+            document_index = item.get("index")
+            if (
+                not isinstance(document_index, int)
+                or document_index < 0
+                or document_index >= len(candidates)
+                or document_index in seen_indexes
+            ):
+                raise ValueError("重排序接口返回了无效的候选索引。")
+            score = item.get("relevance_score")
+            if not isinstance(score, (int, float)):
+                raise ValueError("重排序接口返回了无效的相关性分数。")
+            candidate = candidates[document_index]
+            candidate["rerank_rank_no"] = rerank_position
+            candidate["rerank_score"] = float(score)
+            ordered.append(candidate)
+            seen_indexes.add(document_index)
+
+        # 服务若没有返回全部候选，未评分项仍保留向量原顺序，保证检索追踪记录完整。
+        ordered.extend(
+            candidate
+            for index, candidate in enumerate(candidates)
+            if index not in seen_indexes
+        )
+        selected = ordered[: max(1, min(final_top_k, len(ordered)))]
+        for candidate in selected:
+            candidate["selected_for_context"] = True
+        return PolicyRerankResult(selected, candidates, latency_ms)
+
+
 class RiskReviewService:
     """使用 LangGraph 并行执行四项 RAG 检查并汇总审批建议。"""
 
@@ -101,10 +209,12 @@ class RiskReviewService:
         repository: RiskReviewRepository | None = None,
         embedding_provider: DashScopeEmbeddingProvider | None = None,
         model_provider: ReviewModelProvider | None = None,
+        rerank_provider: DashScopeRerankProvider | None = None,
     ) -> None:
         self.repository = repository or RiskReviewRepository()
         self.embedding_provider = embedding_provider
         self.model_provider = model_provider
+        self.rerank_provider = rerank_provider
 
     def create_review(self, contract_id: UUID) -> RiskReviewCreateResponse:
         if not settings.api_key:
@@ -138,6 +248,7 @@ class RiskReviewService:
         # Provider 在 Worker 真正执行任务时创建，确保读取到 Worker 进程自己的 api-key。
         self.embedding_provider = self.embedding_provider or DashScopeEmbeddingProvider()
         self.model_provider = self.model_provider or ReviewModelProvider()
+        self.rerank_provider = self.rerank_provider or DashScopeRerankProvider()
 
         graph = StateGraph(ReviewState)
         graph.add_node("load_context", self._load_context)
@@ -201,20 +312,53 @@ class RiskReviewService:
         contract_chunks = self.repository.search_contract_chunks(
             context["contract_document_id"], query_vector, 3
         )
-        policy_chunks = self.repository.search_policy_chunks(query_vector, 5)
+        policy_candidates = self.repository.search_policy_chunks(
+            query_vector, settings.policy_recall_top_k
+        )
+        rerank_strategy = "RERANK"
+        rerank_error = None
+        rerank_latency_ms = None
+        try:
+            rerank_result = self.rerank_provider.rerank(
+                query, policy_candidates, settings.policy_final_top_k
+            )
+            policy_chunks = rerank_result.selected_hits
+            policy_candidates = rerank_result.all_hits
+            rerank_latency_ms = rerank_result.latency_ms
+        except Exception as exc:
+            # 重排序是质量增强步骤，不应让整项风险审查失败；失败时使用向量排名前 5 条降级。
+            rerank_strategy = "RERANK_FALLBACK"
+            rerank_error = _safe_error_message(exc)
+            policy_candidates = [
+                {
+                    **hit,
+                    "vector_rank_no": index,
+                    "rerank_rank_no": None,
+                    "rerank_score": None,
+                    "selected_for_context": index <= settings.policy_final_top_k,
+                }
+                for index, hit in enumerate(policy_candidates, 1)
+            ]
+            policy_chunks = policy_candidates[: settings.policy_final_top_k]
         self.repository.record_retrieval(
             node_run_id,
             query,
             {"document_id": str(context["contract_document_id"]), "chunk_type": "CONTRACT_CLAUSE"},
             contract_chunks,
             settings.embedding_model,
+            final_top_k=3,
         )
         self.repository.record_retrieval(
             node_run_id,
             query,
             {"document_type": "POLICY", "is_current": True, "chunk_type": "POLICY_SECTION"},
-            policy_chunks,
+            policy_candidates,
             settings.embedding_model,
+            final_top_k=settings.policy_final_top_k,
+            ranking_strategy=rerank_strategy,
+            rerank_model=settings.rerank_model,
+            rerank_latency_ms=rerank_latency_ms,
+            rerank_error=rerank_error,
         )
 
         if not contract_chunks or not policy_chunks:
@@ -310,6 +454,21 @@ def _format_candidates(chunks: list[dict[str, Any]], prefix: str) -> str:
             f"[{prefix}{index}] 文档：{chunk['document_title']}；位置：{heading or '未标注'}\n{chunk['content']}"
         )
     return "\n\n".join(blocks)
+
+
+def _build_rerank_document(chunk: dict[str, Any]) -> str:
+    """把制度来源与条款正文组合为重排序模型可理解的单段文本。"""
+
+    heading = " ".join(
+        str(value)
+        for value in (
+            chunk.get("document_title"),
+            chunk.get("clause_no"),
+            chunk.get("title"),
+        )
+        if value
+    )
+    return f"{heading}\n{chunk['content']}" if heading else str(chunk["content"])
 
 
 def _select_references(

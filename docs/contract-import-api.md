@@ -261,13 +261,20 @@ docker compose up -d postgres redis
 
 风险审查固定执行付款、质保、违约责任和争议解决四项检查。LangGraph 在加载合同上下文后并行扇出四个检查节点，等待四项全部结束后再执行汇总。每项检查完成以下步骤：
 
-1. 只在当前合同文档中检索最多 3 条合同证据。
-2. 只在当前有效制度中检索最多 5 条制度证据。
+1. 只在当前合同文档中向量检索最多 3 条合同证据，合同侧暂不重排序。
+2. 在当前有效制度中向量召回 Top 10，再由 `qwen3-rerank` 重排序并取 Top 5。
 3. 使用 `qwen-plus`（可通过 `REVIEW_MODEL` 修改）输出结构化结论。
 4. 校验模型返回的 `C1/P1` 引用标签，并从数据库回查引用原文。
-5. 保存风险项、证据、检索记录、模型调用记录和节点执行记录。
+5. 保存风险项、证据、向量/重排记录、模型调用记录和节点执行记录。
 
-合同和制度章节必须先完成向量化。聊天模型和向量模型共用 `api-key` 环境变量与百炼兼容地址。
+合同和制度章节必须先完成向量化。聊天模型、向量模型和重排序模型共用 `api-key`
+环境变量。重排序调用百炼专用接口，可通过 `RERANK_MODEL`、`RERANK_URL`、
+`POLICY_RECALL_TOP_K` 和 `POLICY_FINAL_TOP_K` 配置。重排序失败时审查不会失败，制度侧会
+降级为向量前 5，并在检索运行记录中保存错误摘要。
+
+默认使用百炼当前推荐的 `qwen3-rerank` 兼容接口；`gte-rerank-v2` 已停止服务，不应再作为
+新项目默认模型。接口格式以[百炼 Text Rerank API](https://help.aliyun.com/en/model-studio/text-rerank-api)
+为准。
 
 ### 创建审查
 
@@ -294,6 +301,18 @@ Content-Type: application/json
 
 前端每 1.5 秒查询 `/api/v1/risk-reviews/{review_run_id}`。任务完成后响应包含总体风险、审批建议、四项检查结论及每项合同/制度证据。
 
+`GET /api/v1/risk-reviews/contracts` 还会返回每份合同最近一次审查的
+`latest_review_run_id`、`latest_review_status`、`latest_review_created_at` 和
+`latest_review_is_current`。前端重新进入风险审查页面或切换合同时，会据此自动恢复最近
+一次结果；如果任务仍在运行则继续轮询。
+
+每项 `finding` 的 `retrieval_candidates` 返回该 LangGraph 分支已经持久化的检索候选，
+字段包括来源类型、文档标题、条款编号、正文、向量排名/相似度、重排排名/分数、
+`selected_for_context`、`ranking_strategy` 和 `selected_as_evidence`。候选来自现有
+`retrieval_runs`、`retrieval_hits` 和
+`document_chunks`，不需要新增数据表。`evidence` 仍只表示最终采纳证据，不能把所有候选
+等同于结论依据。
+
 ### 已有数据库迁移
 
 新建数据卷会由 `database/init/002_seed.sql` 初始化四项检查。已有演示数据库需要执行：
@@ -301,6 +320,7 @@ Content-Type: application/json
 ```powershell
 docker compose up -d postgres
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/003_risk_review_agent.sql
+docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/005_policy_reranking.sql
 ```
 
 ## 辅助审批接口

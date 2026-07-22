@@ -34,7 +34,11 @@ class RiskReviewRepository:
                     d.revision_no,
                     COUNT(dc.id)::INTEGER AS clause_count,
                     COUNT(dc.embedding)::INTEGER AS vectorized_clause_count,
-                    (COUNT(dc.id) > 0 AND COUNT(dc.id) = COUNT(dc.embedding)) AS review_ready
+                    (COUNT(dc.id) > 0 AND COUNT(dc.id) = COUNT(dc.embedding)) AS review_ready,
+                    latest_review.id AS latest_review_run_id,
+                    latest_review.status AS latest_review_status,
+                    latest_review.created_at AS latest_review_created_at,
+                    (latest_review.contract_document_id = d.id) AS latest_review_is_current
                 FROM contracts c
                 JOIN contract_types ct ON ct.id = c.contract_type_id
                 JOIN documents d
@@ -42,7 +46,16 @@ class RiskReviewRepository:
                  AND d.document_type = 'CONTRACT'
                  AND d.is_current = TRUE
                 LEFT JOIN document_chunks dc ON dc.document_id = d.id
-                GROUP BY c.id, ct.code, d.id
+                LEFT JOIN LATERAL (
+                    SELECT rr.id, rr.status, rr.created_at, rr.contract_document_id
+                    FROM review_runs rr
+                    WHERE rr.contract_id = c.id
+                    ORDER BY rr.created_at DESC
+                    LIMIT 1
+                ) latest_review ON TRUE
+                GROUP BY c.id, ct.code, d.id, latest_review.id,
+                         latest_review.status, latest_review.created_at,
+                         latest_review.contract_document_id
                 ORDER BY c.created_at DESC
                 """
             ).fetchall()
@@ -315,15 +328,25 @@ class RiskReviewRepository:
         filters: dict[str, Any],
         hits: list[dict[str, Any]],
         model_name: str,
+        *,
+        final_top_k: int | None = None,
+        ranking_strategy: str = "VECTOR",
+        rerank_model: str | None = None,
+        rerank_latency_ms: int | None = None,
+        rerank_error: str | None = None,
     ) -> None:
+        """保存向量召回与可选重排序结果，区分候选集和实际模型上下文。"""
+
         retrieval_run_id = uuid4()
         with open_connection() as connection:
             with connection.transaction():
                 connection.execute(
                     """
                     INSERT INTO retrieval_runs (
-                        id, node_run_id, query_text, query_embedding_model, filters, top_k
-                    ) VALUES (%s, %s, %s, %s, %s, %s)
+                        id, node_run_id, query_text, query_embedding_model, filters, top_k,
+                        final_top_k, ranking_strategy, rerank_model,
+                        rerank_latency_ms, rerank_error
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         retrieval_run_id,
@@ -332,6 +355,11 @@ class RiskReviewRepository:
                         model_name,
                         Jsonb(filters),
                         max(1, len(hits)),
+                        final_top_k,
+                        ranking_strategy,
+                        rerank_model,
+                        rerank_latency_ms,
+                        rerank_error,
                     ),
                 )
                 if hits:
@@ -340,15 +368,19 @@ class RiskReviewRepository:
                             """
                             INSERT INTO retrieval_hits (
                                 retrieval_run_id, chunk_id, rank_no,
-                                similarity_score, selected_for_context
-                            ) VALUES (%s, %s, %s, %s, TRUE)
+                                similarity_score, rerank_rank_no, rerank_score,
+                                selected_for_context
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """,
                             [
                                 (
                                     retrieval_run_id,
                                     hit["id"],
-                                    rank,
+                                    hit.get("vector_rank_no", rank),
                                     max(-1, min(1, hit["similarity_score"])),
+                                    hit.get("rerank_rank_no"),
+                                    hit.get("rerank_score"),
+                                    hit.get("selected_for_context", True),
                                 )
                                 for rank, hit in enumerate(hits, 1)
                             ],
@@ -657,14 +689,60 @@ class RiskReviewRepository:
                     """,
                     (finding_ids,),
                 ).fetchall()
+            # retrieval_runs/retrieval_hits 已经记录每个 LangGraph 分支实际召回的候选。
+            # 这里回查候选正文和排名，让前端能区分“检索到”与“最终被模型采纳”。
+            retrieval_rows = connection.execute(
+                """
+                SELECT
+                    UPPER(node.node_name) AS check_code,
+                    hit.chunk_id,
+                    CASE WHEN d.document_type = 'CONTRACT'
+                         THEN 'CONTRACT' ELSE 'POLICY' END AS evidence_type,
+                    d.title AS document_title, dc.clause_no, dc.title, dc.content,
+                    hit.rank_no, hit.similarity_score,
+                    hit.rerank_rank_no, hit.rerank_score,
+                    hit.selected_for_context,
+                    retrieval.ranking_strategy, retrieval.rerank_model,
+                    EXISTS (
+                        SELECT 1
+                        FROM finding_evidence selected_evidence
+                        JOIN risk_findings selected_finding
+                          ON selected_finding.id = selected_evidence.finding_id
+                        JOIN review_check_items selected_item
+                          ON selected_item.id = selected_finding.check_item_id
+                        WHERE selected_evidence.chunk_id = hit.chunk_id
+                          AND selected_finding.review_run_id = %s
+                          AND LOWER(selected_item.code) = node.node_name
+                    ) AS selected_as_evidence
+                FROM workflow_runs workflow
+                JOIN workflow_node_runs node ON node.workflow_run_id = workflow.id
+                JOIN retrieval_runs retrieval ON retrieval.node_run_id = node.id
+                JOIN retrieval_hits hit ON hit.retrieval_run_id = retrieval.id
+                JOIN document_chunks dc ON dc.id = hit.chunk_id
+                JOIN documents d ON d.id = dc.document_id
+                WHERE workflow.review_run_id = %s
+                ORDER BY node.sequence_no, d.document_type,
+                         COALESCE(hit.rerank_rank_no, hit.rank_no)
+                """,
+                (review_run_id, review_run_id),
+            ).fetchall()
         evidence_by_finding: dict[UUID, list[dict[str, Any]]] = {}
         for evidence in evidence_rows:
             evidence_by_finding.setdefault(evidence["finding_id"], []).append(
                 {key: value for key, value in dict(evidence).items() if key != "finding_id"}
             )
+        retrieval_by_check: dict[str, list[dict[str, Any]]] = {}
+        for candidate in retrieval_rows:
+            candidate_payload = dict(candidate)
+            check_code = candidate_payload.pop("check_code")
+            retrieval_by_check.setdefault(check_code, []).append(candidate_payload)
         payload = dict(review)
         payload["findings"] = [
-            {**dict(finding), "evidence": evidence_by_finding.get(finding["id"], [])}
+            {
+                **dict(finding),
+                "evidence": evidence_by_finding.get(finding["id"], []),
+                "retrieval_candidates": retrieval_by_check.get(finding["check_code"], []),
+            }
             for finding in findings
         ]
         return RiskReviewDetail.model_validate(payload)

@@ -24,6 +24,10 @@ class ReviewContractOption(BaseModel):
     clause_count: int
     vectorized_clause_count: int
     review_ready: bool
+    latest_review_run_id: UUID | None = None
+    latest_review_status: ReviewStatus | None = None
+    latest_review_created_at: datetime | None = None
+    latest_review_is_current: bool | None = None
 
 
 class RiskReviewCreateRequest(BaseModel):
@@ -50,6 +54,25 @@ class RiskEvidence(BaseModel):
     relevance_score: float | None = None
 
 
+class RiskRetrievalCandidate(BaseModel):
+    """审查节点实际检索到的候选条款，不等同于最终采纳证据。"""
+
+    chunk_id: UUID
+    evidence_type: Literal["CONTRACT", "POLICY"]
+    document_title: str
+    clause_no: str | None = None
+    title: str | None = None
+    content: str
+    rank_no: int = Field(ge=1)
+    similarity_score: float
+    rerank_rank_no: int | None = Field(default=None, ge=1)
+    rerank_score: float | None = None
+    selected_for_context: bool = False
+    ranking_strategy: Literal["VECTOR", "RERANK", "RERANK_FALLBACK"] = "VECTOR"
+    rerank_model: str | None = None
+    selected_as_evidence: bool = False
+
+
 class RiskFinding(BaseModel):
     id: UUID
     check_code: str
@@ -61,6 +84,7 @@ class RiskFinding(BaseModel):
     suggestion: str | None = None
     confidence: float | None = None
     evidence: list[RiskEvidence] = Field(default_factory=list)
+    retrieval_candidates: list[RiskRetrievalCandidate] = Field(default_factory=list)
 
 
 class RiskReviewDetail(BaseModel):
