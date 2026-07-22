@@ -144,3 +144,30 @@ Content-Type: application/json
 # review_run_id 来自创建风险审查响应。
 GET http://127.0.0.1:8000/api/v1/risk-reviews/请替换为review_run_id
 Accept: application/json
+
+### 查询辅助审批候选报告
+GET http://127.0.0.1:8000/api/v1/approvals/candidates
+Accept: application/json
+
+### 创建固定业务、法务两级审批
+POST http://127.0.0.1:8000/api/v1/approvals
+Content-Type: application/json
+
+{
+  "review_run_id": "请替换为review_run_id"
+}
+
+### 查询审批详情
+GET http://127.0.0.1:8000/api/v1/approvals/请替换为approval_instance_id
+Accept: application/json
+
+### 处理当前审批节点
+# 退回 RETURNED 或驳回 REJECTED 时 comment 必填。
+POST http://127.0.0.1:8000/api/v1/approvals/请替换为approval_instance_id/actions
+Content-Type: application/json
+
+{
+  "approver_name": "演示审批人",
+  "decision": "APPROVED",
+  "comment": "已核对风险依据，同意进入下一节点。"
+}

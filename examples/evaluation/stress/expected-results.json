@@ -1,0 +1,27 @@
+{
+  "case_id": "stress-50x100",
+  "contract_no": "EVAL-STRESS-001",
+  "policy_no": "EVAL-STRESS-POLICY-001",
+  "expected": {
+    "PAYMENT_TERMS": {
+      "status": "RISK",
+      "contract_clause_nos": ["C018"],
+      "policy_section_nos": ["P025"]
+    },
+    "WARRANTY": {
+      "status": "PASS",
+      "contract_clause_nos": ["C001", "C030"],
+      "policy_section_nos": ["P048", "P050"]
+    },
+    "BREACH_LIABILITY": {
+      "status": "RISK",
+      "contract_clause_nos": ["C040"],
+      "policy_section_nos": ["P075"]
+    },
+    "DISPUTE_RESOLUTION": {
+      "status": "PASS",
+      "contract_clause_nos": ["C050"],
+      "policy_section_nos": ["P080", "P100"]
+    }
+  }
+}

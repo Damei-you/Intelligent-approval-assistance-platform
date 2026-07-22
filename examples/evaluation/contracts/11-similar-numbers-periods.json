@@ -1,0 +1,23 @@
+{
+  "contract_no": "EVAL-011",
+  "name": "相似数字与期限排序测试合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商丑公司",
+  "amount": 300000,
+  "currency": "CNY",
+  "document_title": "EVAL-011相似数字与期限排序测试合同",
+  "clauses": [
+    { "clause_no": "第一条", "title": "设备数量", "content": "乙方提供三十台办公终端设备。" },
+    { "clause_no": "第二条", "title": "交付期限", "content": "全部设备应在六个月内分批交付完成。" },
+    { "clause_no": "第三条", "title": "合同有效期", "content": "本合同整体有效期为二十四个月。" },
+    { "clause_no": "第四条", "title": "费用报销", "content": "现场服务产生的合规费用应在三十日内提交报销。" },
+    { "clause_no": "第五条", "title": "履约保证金", "content": "履约保证金为合同总价的百分之十，不属于预付款。" },
+    { "clause_no": "第六条", "title": "预付款", "content": "本合同预付款为合同总价的百分之三十，剩余款项在验收合格后支付。" },
+    { "clause_no": "第七条", "title": "设备质保期限", "content": "设备质保期为十二个月，自验收合格之日起计算。" },
+    { "clause_no": "第八条", "title": "档案期限", "content": "双方应将履约资料至少保存二十四个月。" },
+    { "clause_no": "第九条", "title": "违约责任", "content": "双方任何一方违约均应承担相应违约责任。" },
+    { "clause_no": "第十条", "title": "签订地点", "content": "本合同在上海市签订，签订地点不构成管辖约定。" },
+    { "clause_no": "第十一条", "title": "争议解决", "content": "本合同适用中华人民共和国法律，争议由甲方住所地人民法院处理。" }
+  ],
+  "metadata": { "evaluation_case_id": "11-similar-numbers-periods", "rerank_challenge": true }
+}

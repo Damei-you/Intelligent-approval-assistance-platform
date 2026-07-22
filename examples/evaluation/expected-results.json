@@ -1,0 +1,145 @@
+{
+  "dataset_version": "1.0",
+  "policy_current_version": "V2.0",
+  "check_codes": [
+    "PAYMENT_TERMS",
+    "WARRANTY",
+    "BREACH_LIABILITY",
+    "DISPUTE_RESOLUTION"
+  ],
+  "cases": [
+    {
+      "case_id": "01-all-risk",
+      "contract_file": "contracts/01-all-risk.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "RISK", "contract_clause_nos": ["第四条"], "policy_section_nos": ["第三条"] },
+        "WARRANTY": { "status": "RISK", "contract_clause_nos": ["第六条"], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "RISK", "contract_clause_nos": ["第八条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "RISK", "contract_clause_nos": ["第十条"], "policy_section_nos": ["第十五条"] }
+      }
+    },
+    {
+      "case_id": "02-all-pass-sales",
+      "contract_file": "contracts/02-all-pass-sales.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "PASS", "contract_clause_nos": ["第四条"], "policy_section_nos": ["第四条"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第六条"], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第八条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第九条", "第十条"], "policy_section_nos": ["第十五条"] }
+      }
+    },
+    {
+      "case_id": "03-missing-clauses",
+      "contract_file": "contracts/03-missing-clauses.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "INSUFFICIENT_INFORMATION", "contract_clause_nos": [], "policy_section_nos": ["第三条"] },
+        "WARRANTY": { "status": "INSUFFICIENT_INFORMATION", "contract_clause_nos": [], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "INSUFFICIENT_INFORMATION", "contract_clause_nos": [], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "INSUFFICIENT_INFORMATION", "contract_clause_nos": [], "policy_section_nos": ["第十五条"] }
+      }
+    },
+    {
+      "case_id": "04-mixed",
+      "contract_file": "contracts/04-mixed.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "PASS", "contract_clause_nos": ["第四条"], "policy_section_nos": ["第三条"] },
+        "WARRANTY": { "status": "RISK", "contract_clause_nos": ["第五条"], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第七条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "RISK", "contract_clause_nos": ["第八条", "第九条"], "policy_section_nos": ["第十五条"] }
+      }
+    },
+    {
+      "case_id": "05-paraphrase",
+      "contract_file": "contracts/05-paraphrase.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "PASS", "contract_clause_nos": ["第三条"], "policy_section_nos": ["第三条"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第五条"], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第六条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第七条", "第八条"], "policy_section_nos": ["第十五条"] }
+      }
+    },
+    {
+      "case_id": "06-ambiguous",
+      "contract_file": "contracts/06-ambiguous.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "INSUFFICIENT_INFORMATION", "contract_clause_nos": ["第二条"], "policy_section_nos": ["第三条"] },
+        "WARRANTY": { "status": "INSUFFICIENT_INFORMATION", "contract_clause_nos": ["第四条"], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "INSUFFICIENT_INFORMATION", "contract_clause_nos": ["第五条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "INSUFFICIENT_INFORMATION", "contract_clause_nos": ["第六条"], "policy_section_nos": ["第十五条"] }
+      }
+    },
+    {
+      "case_id": "07-distractors",
+      "contract_file": "contracts/07-distractors.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "PASS", "contract_clause_nos": ["第三条"], "policy_section_nos": ["第三条"], "forbidden_contract_clause_nos": ["背景一"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第五条"], "policy_section_nos": ["第九条"], "forbidden_contract_clause_nos": ["背景二"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第六条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第七条", "第八条"], "policy_section_nos": ["第十五条"], "forbidden_contract_clause_nos": ["背景三"] }
+      }
+    },
+    {
+      "case_id": "08-cross-contract-a",
+      "contract_file": "contracts/08-cross-contract-a.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "PASS", "contract_clause_nos": ["第二条"], "policy_section_nos": ["第三条"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第三条"], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第四条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第五条"], "policy_section_nos": ["第十五条"] }
+      },
+      "forbidden_contract_no": "EVAL-008-B"
+    },
+    {
+      "case_id": "08-cross-contract-b",
+      "contract_file": "contracts/08-cross-contract-b.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "RISK", "contract_clause_nos": ["第二条"], "policy_section_nos": ["第三条"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第三条"], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第四条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第五条"], "policy_section_nos": ["第十五条"] }
+      },
+      "forbidden_contract_no": "EVAL-008-A"
+    },
+    {
+      "case_id": "09-history-vs-current",
+      "contract_file": "contracts/09-history-vs-current.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "PASS", "contract_clause_nos": ["第二条"], "policy_section_nos": ["第三条"], "forbidden_contract_clause_nos": ["说明一", "说明二"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第四条"], "policy_section_nos": ["第九条"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第五条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第六条", "第七条"], "policy_section_nos": ["第十五条"] }
+      }
+    },
+    {
+      "case_id": "10-negation-exception",
+      "contract_file": "contracts/10-negation-exception.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "PASS", "contract_clause_nos": ["第二条"], "policy_section_nos": ["第三条"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第一条", "第三条"], "policy_section_nos": ["第九条"], "forbidden_contract_clause_nos": ["说明一"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第五条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第六条", "第七条"], "policy_section_nos": ["第十五条"] }
+      }
+    },
+    {
+      "case_id": "11-similar-numbers-periods",
+      "contract_file": "contracts/11-similar-numbers-periods.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "PASS", "contract_clause_nos": ["第六条"], "policy_section_nos": ["第三条"], "forbidden_contract_clause_nos": ["第四条", "第五条"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第七条"], "policy_section_nos": ["第九条"], "forbidden_contract_clause_nos": ["第二条", "第三条", "第八条"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第九条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第十一条"], "policy_section_nos": ["第十五条"], "forbidden_contract_clause_nos": ["第十条"] }
+      }
+    },
+    {
+      "case_id": "12-policy-hard-negatives",
+      "contract_file": "contracts/12-policy-hard-negatives.json",
+      "expected": {
+        "PAYMENT_TERMS": { "status": "RISK", "contract_clause_nos": ["第三条"], "policy_section_nos": ["第三条"], "forbidden_contract_clause_nos": ["第四条", "第五条"], "forbidden_policy_section_nos": ["第四条", "第五条", "第六条"] },
+        "WARRANTY": { "status": "PASS", "contract_clause_nos": ["第一条", "第六条"], "policy_section_nos": ["第九条"], "forbidden_policy_section_nos": ["第十条", "第十一条", "第十九条"] },
+        "BREACH_LIABILITY": { "status": "PASS", "contract_clause_nos": ["第八条"], "policy_section_nos": ["第十二条"] },
+        "DISPUTE_RESOLUTION": { "status": "PASS", "contract_clause_nos": ["第十一条"], "policy_section_nos": ["第十五条"], "forbidden_contract_clause_nos": ["第九条", "第十条"], "forbidden_policy_section_nos": ["第十六条", "第十七条", "第十八条"] }
+      },
+      "forbidden_policy_version": "V1.0"
+    }
+  ]
+}

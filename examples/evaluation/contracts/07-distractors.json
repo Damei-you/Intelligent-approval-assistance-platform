@@ -1,0 +1,24 @@
+{
+  "contract_no": "EVAL-007",
+  "name": "包含高相似干扰条款的采购合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商庚公司",
+  "amount": 180000,
+  "currency": "CNY",
+  "document_title": "EVAL-007包含高相似干扰条款的采购合同",
+  "clauses": [
+    { "clause_no": "背景一", "title": "历史付款说明", "content": "双方上一份已经终止的历史合同曾采用百分之八十预付款，本合同不适用该历史安排。" },
+    { "clause_no": "背景二", "title": "宣传质保说明", "content": "产品宣传资料中曾出现六个月质保字样，该宣传资料不构成本合同承诺。" },
+    { "clause_no": "背景三", "title": "谈判地点", "content": "双方曾在上海市进行商务谈判，谈判地点不属于争议管辖约定。" },
+    { "clause_no": "第一条", "title": "合同标的", "content": "乙方向甲方提供非消耗类办公设备。" },
+    { "clause_no": "第二条", "title": "合同价格", "content": "合同总价为人民币壹拾捌万元。" },
+    { "clause_no": "第三条", "title": "正式付款条款", "content": "本合同预付款为合同总价的百分之二十，剩余款项在验收合格后支付。" },
+    { "clause_no": "第四条", "title": "验收", "content": "甲方按照清单和功能标准验收设备。" },
+    { "clause_no": "第五条", "title": "正式质保条款", "content": "本合同设备质保期为二十四个月，自验收合格之日起计算。" },
+    { "clause_no": "第六条", "title": "正式违约责任", "content": "任何一方违约均应承担相应责任，并赔偿守约方合理损失。" },
+    { "clause_no": "第七条", "title": "适用法律", "content": "本合同适用中华人民共和国法律。" },
+    { "clause_no": "第八条", "title": "正式管辖条款", "content": "争议由甲方即演示企业住所地有管辖权的人民法院处理。" },
+    { "clause_no": "第九条", "title": "合同效力", "content": "背景资料与正式条款不一致时，以编号正式条款为准。" }
+  ],
+  "metadata": { "evaluation_case_id": "07-distractors", "expected_profile": "hard-negative-pass" }
+}

@@ -1,0 +1,33 @@
+{
+  "policy_no": "EVAL-POLICY-001",
+  "title": "合同风险审查测试制度",
+  "version": "V1.0",
+  "issuer": "演示企业法务部",
+  "effective_date": "2025-01-01",
+  "sections": [
+    {
+      "section_no": "第三条",
+      "title": "采购预付款旧标准",
+      "content": "采购合同预付款比例原则上不得超过合同总价的百分之五十。"
+    },
+    {
+      "section_no": "第九条",
+      "title": "质保旧标准",
+      "content": "一般设备质保期原则上不得少于六个月。"
+    },
+    {
+      "section_no": "第十二条",
+      "title": "违约责任旧标准",
+      "content": "合同应当约定主要履约方的违约责任。"
+    },
+    {
+      "section_no": "第十五条",
+      "title": "争议解决旧标准",
+      "content": "合同争议可以提交上海仲裁机构处理。"
+    }
+  ],
+  "metadata": {
+    "dataset": "risk-review-evaluation",
+    "expected_current": false
+  }
+}

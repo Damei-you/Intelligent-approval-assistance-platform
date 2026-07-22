@@ -67,6 +67,7 @@ tmp/
 temp/
 .cache/
 celerybeat-schedule*
+output/evaluation/
 
 # 上传的合同可能包含敏感信息，只保留空目录占位文件。
 storage/uploads/*

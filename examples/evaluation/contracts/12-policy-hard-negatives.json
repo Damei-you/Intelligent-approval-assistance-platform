@@ -1,0 +1,23 @@
+{
+  "contract_no": "EVAL-012",
+  "name": "制度困难负样本采购合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商寅公司",
+  "amount": 260000,
+  "currency": "CNY",
+  "document_title": "EVAL-012制度困难负样本采购合同",
+  "clauses": [
+    { "clause_no": "第一条", "title": "合同性质", "content": "本合同为一般办公设备采购合同，标的不属于消耗品或纯服务项目。" },
+    { "clause_no": "第二条", "title": "合同金额", "content": "合同总价为人民币贰拾陆万元整。" },
+    { "clause_no": "第三条", "title": "采购预付款", "content": "合同生效后甲方支付合同总价的百分之四十作为预付款，余款验收后支付。" },
+    { "clause_no": "第四条", "title": "保证金", "content": "乙方向甲方提交合同总价百分之十的履约保证金。" },
+    { "clause_no": "第五条", "title": "报销", "content": "现场服务费用应在发生后三十日内提交报销。" },
+    { "clause_no": "第六条", "title": "一般设备质保", "content": "设备质保期为十二个月，自验收合格之日起计算。" },
+    { "clause_no": "第七条", "title": "维护服务", "content": "质保期结束后可以另行购买维护服务。" },
+    { "clause_no": "第八条", "title": "双方责任", "content": "任何一方未履行合同义务均应承担违约责任并赔偿合理损失。" },
+    { "clause_no": "第九条", "title": "签订地点", "content": "本合同在上海市签订。" },
+    { "clause_no": "第十条", "title": "交付地点", "content": "设备交付至杭州市项目现场。" },
+    { "clause_no": "第十一条", "title": "争议解决", "content": "本合同适用中华人民共和国法律，争议由甲方即演示企业住所地有管辖权的人民法院处理。" }
+  ],
+  "metadata": { "evaluation_case_id": "12-policy-hard-negatives", "rerank_challenge": true }
+}

@@ -123,3 +123,27 @@ export function createRiskReview(contractId) {
 export function getRiskReview(reviewRunId) {
   return request(`/api/v1/risk-reviews/${reviewRunId}`)
 }
+
+export function listApprovalCandidates() {
+  return request('/api/v1/approvals/candidates')
+}
+
+export function createApproval(reviewRunId) {
+  return request('/api/v1/approvals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ review_run_id: reviewRunId }),
+  })
+}
+
+export function getApproval(approvalInstanceId) {
+  return request(`/api/v1/approvals/${approvalInstanceId}`)
+}
+
+export function takeApprovalAction(approvalInstanceId, payload) {
+  return request(`/api/v1/approvals/${approvalInstanceId}/actions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}

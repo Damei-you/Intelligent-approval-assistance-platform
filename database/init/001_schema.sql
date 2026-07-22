@@ -165,7 +165,8 @@ CREATE TABLE approval_instances (
     final_decision VARCHAR(32)
         CHECK (final_decision IS NULL OR final_decision IN ('APPROVED', 'REJECTED', 'RETURNED')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMPTZ
+    completed_at TIMESTAMPTZ,
+    CONSTRAINT uq_approval_instances_review_run UNIQUE (review_run_id)
 );
 
 CREATE TABLE approval_steps (

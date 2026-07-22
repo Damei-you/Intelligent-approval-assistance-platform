@@ -1,0 +1,17 @@
+{
+  "contract_no": "EVAL-008-B",
+  "name": "跨合同隔离样本B",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商壬公司",
+  "amount": 100000,
+  "currency": "CNY",
+  "document_title": "EVAL-008-B跨合同隔离样本B",
+  "clauses": [
+    { "clause_no": "第一条", "title": "标的", "content": "乙方向甲方提供一般办公设备。" },
+    { "clause_no": "第二条", "title": "付款", "content": "本合同预付款为百分之八十，尾款在设备交付前支付。" },
+    { "clause_no": "第三条", "title": "质保", "content": "设备质保期为二十四个月，自验收合格之日起计算。" },
+    { "clause_no": "第四条", "title": "违约", "content": "双方违反合同约定均应承担相应违约责任。" },
+    { "clause_no": "第五条", "title": "争议", "content": "合同适用中华人民共和国法律，争议由甲方住所地人民法院处理。" }
+  ],
+  "metadata": { "evaluation_case_id": "08-cross-contract-b", "pair": "08-cross-contract-a" }
+}

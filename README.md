@@ -6,6 +6,10 @@
 
 风险审查智能体已实现付款、质保、违约责任和争议解决四项并行 RAG 检查。审查通过 Celery 异步执行 LangGraph 四分支工作流，每项结论均保存合同条款与制度依据，四项结束后统一汇总，前端提供进度、汇总和证据对照展示。
 
+辅助审批已实现固定两级人工流程：业务审批通过后进入法务审批，两级均通过后合同批准；
+任一级可退回修改或驳回。审批页面会展示风险审查摘要和 AI 建议，但最终决定、操作人和
+意见均由人工提交并持久化保存。
+
 ## 启动 PostgreSQL 与 Redis
 
 前置条件：Docker Desktop 已启动。
@@ -55,9 +59,18 @@ PostgreSQL 官方镜像只会在空数据目录上运行初始化脚本。后续
 ```powershell
 docker compose up -d postgres
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/003_risk_review_agent.sql
+docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/004_approval_unique_review.sql
 ```
 
 完整表结构说明见 [docs/database-design.md](docs/database-design.md)。
+
+## 风险审查评测数据
+
+`examples/evaluation` 提供两版虚构制度、12类合同测试场景、预期风险结论和重排序分级标注。数据覆盖明确风险、明确合规、信息不足、同义表达、困难负样本、跨合同隔离和制度版本过滤，可以直接通过 JSON 导入接口使用。`examples/evaluation/stress` 另提供一份 50 条合同与 100 条制度的重排序压力集。执行顺序和指标说明见 [examples/evaluation/README.md](examples/evaluation/README.md)。
+
+可使用 `tools/evaluate_rag.py` 自动完成压力集离线校验、真实向量检索指标统计和风险审查
+端到端对比，并输出 JSON 与 Markdown 报告。使用说明见
+[docs/rag-evaluation.md](docs/rag-evaluation.md)。
 
 ## 合同与制度依据导入接口
 

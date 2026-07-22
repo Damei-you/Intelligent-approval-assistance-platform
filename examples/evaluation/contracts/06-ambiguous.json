@@ -1,0 +1,19 @@
+{
+  "contract_no": "EVAL-006",
+  "name": "约定模糊采购合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商己公司",
+  "amount": 90000,
+  "currency": "CNY",
+  "document_title": "EVAL-006约定模糊采购合同",
+  "clauses": [
+    { "clause_no": "第一条", "title": "采购标的", "content": "乙方向甲方提供办公设备。" },
+    { "clause_no": "第二条", "title": "付款原则", "content": "合同款项按照双方以往合作方式和行业惯例支付。" },
+    { "clause_no": "第三条", "title": "交付", "content": "乙方按照甲方通知安排交付。" },
+    { "clause_no": "第四条", "title": "质量保障", "content": "质量保障按照乙方届时适用的通常售后政策执行。" },
+    { "clause_no": "第五条", "title": "履约争议", "content": "一方未履约时，双方根据实际情况友好协商责任承担。" },
+    { "clause_no": "第六条", "title": "争议处理", "content": "合同争议按照有关规定另行处理。" },
+    { "clause_no": "第七条", "title": "其他", "content": "未约定事项由双方另行签署补充文件。" }
+  ],
+  "metadata": { "evaluation_case_id": "06-ambiguous", "expected_profile": "insufficient-ambiguous" }
+}

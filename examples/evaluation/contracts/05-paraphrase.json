@@ -1,0 +1,20 @@
+{
+  "contract_no": "EVAL-005",
+  "name": "同义表达采购合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商戊公司",
+  "amount": 120000,
+  "currency": "CNY",
+  "document_title": "EVAL-005同义表达采购合同",
+  "clauses": [
+    { "clause_no": "第一条", "title": "交易内容", "content": "供货方向采购方提供一批非消耗类办公终端。" },
+    { "clause_no": "第二条", "title": "价款", "content": "本次交易总金额为人民币壹拾贰万元。" },
+    { "clause_no": "第三条", "title": "首期支付", "content": "协议订立后先支付总价款的三成，其余款项待设备检验通过后结清。" },
+    { "clause_no": "第四条", "title": "收货检验", "content": "采购方收到货物后检查数量、外观和运行功能。" },
+    { "clause_no": "第五条", "title": "售后保障", "content": "供货方提供为期一年的售后质量保障，期限从收货检验通过之日开始计算。" },
+    { "clause_no": "第六条", "title": "履约责任", "content": "任一方未按照约定履行义务，均须承担责任并补偿另一方的合理损失。" },
+    { "clause_no": "第七条", "title": "法律规则", "content": "双方履行本协议应遵守中华人民共和国法律。" },
+    { "clause_no": "第八条", "title": "诉讼地点", "content": "诉讼应向采购方即演示企业注册地有管辖权的人民法院提起。" }
+  ],
+  "metadata": { "evaluation_case_id": "05-paraphrase", "expected_profile": "all-pass-semantic" }
+}

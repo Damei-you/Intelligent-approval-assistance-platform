@@ -1,0 +1,19 @@
+{
+  "contract_no": "EVAL-003",
+  "name": "关键条款缺失采购合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商丙公司",
+  "amount": 80000,
+  "currency": "CNY",
+  "document_title": "EVAL-003关键条款缺失采购合同",
+  "clauses": [
+    { "clause_no": "第一条", "title": "合同标的", "content": "乙方向甲方提供办公设备和配套操作手册。" },
+    { "clause_no": "第二条", "title": "合同总价", "content": "合同总价为人民币捌万元整，本条仅确认交易金额。" },
+    { "clause_no": "第三条", "title": "交付时间", "content": "乙方应在合同生效后三十日内完成交付。" },
+    { "clause_no": "第四条", "title": "验收内容", "content": "甲方对设备数量、外观及基本功能进行验收。" },
+    { "clause_no": "第五条", "title": "保密", "content": "双方对履约过程中知悉的商业信息承担保密义务。" },
+    { "clause_no": "第六条", "title": "不可抗力通知", "content": "发生不可抗力时，受影响方应在五日内通知对方。" },
+    { "clause_no": "第七条", "title": "合同生效", "content": "本合同自双方盖章之日起生效。" }
+  ],
+  "metadata": { "evaluation_case_id": "03-missing-clauses", "expected_profile": "insufficient" }
+}

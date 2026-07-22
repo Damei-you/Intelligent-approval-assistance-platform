@@ -169,6 +169,10 @@ DRAFT -> PARSING -> READY -> REVIEWING -> PENDING_APPROVAL
 
 当前暂不设计用户表，因此使用 `approver_name` 记录操作人；以后可增加 `approver_id` 外键。
 
+同一份风险报告最多创建一个审批实例。风险报告必须成功完成并且对应合同当前修订版本，
+业务节点通过后才激活法务节点；任一级退回或驳回都会结束本次流程并跳过尚未处理的节点。
+最终决定会同步更新合同状态。AI 的 `approval_suggestion` 只作为页面提示，不自动代替人工决定。
+
 ### 4.5 合同问答
 
 #### `chat_sessions`

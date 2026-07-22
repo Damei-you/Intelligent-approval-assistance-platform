@@ -302,3 +302,60 @@ Content-Type: application/json
 docker compose up -d postgres
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/003_risk_review_agent.sql
 ```
+
+## 辅助审批接口
+
+当前审批流程固定为两级：`BUSINESS` 业务审批、`LEGAL` 法务审批。项目暂不包含用户和
+角色表，因此接口用 `approver_name` 保存演示操作人姓名。后端始终处理当前节点，前端
+不能指定或跳过审批级次。
+
+### `GET /api/v1/approvals/candidates`
+
+查询每份合同最近一次成功风险审查。响应同时说明报告是否对应合同当前版本，以及是否
+已经创建审批实例。旧版本报告可以查看，但不能创建审批。
+
+### `POST /api/v1/approvals`
+
+依据成功风险报告幂等创建审批实例和两个节点：
+
+```json
+{
+  "review_run_id": "风险审查任务 UUID"
+}
+```
+
+创建后业务节点状态为 `IN_PROGRESS`，法务节点为 `PENDING`，合同状态变为
+`PENDING_APPROVAL`。同一 `review_run_id` 重复提交会返回已经存在的实例，不会产生重复
+流程。
+
+### `GET /api/v1/approvals/{approval_instance_id}`
+
+返回合同和风险报告摘要、总体风险、AI 审批辅助建议、四项检查简报、两级审批状态以及
+已经保存的操作人和审批意见。
+
+### `POST /api/v1/approvals/{approval_instance_id}/actions`
+
+处理当前审批节点：
+
+```json
+{
+  "approver_name": "演示审批人",
+  "decision": "APPROVED",
+  "comment": "已核对风险依据，同意进入下一节点。"
+}
+```
+
+`decision` 支持：
+
+- `APPROVED`：业务通过后激活法务；法务通过后合同最终变为 `APPROVED`。
+- `RETURNED`：结束当前流程，未处理节点变为 `SKIPPED`，合同变为 `RETURNED`。
+- `REJECTED`：结束当前流程，未处理节点变为 `SKIPPED`，合同变为 `REJECTED`。
+
+退回和驳回必须填写 `comment`。审批结束后重复操作返回 `409`。业务错误继续使用统一的
+`{ "code": "...", "message": "..." }` 响应结构。
+
+已有数据库需要执行审批幂等约束迁移：
+
+```powershell
+docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/004_approval_unique_review.sql
+```

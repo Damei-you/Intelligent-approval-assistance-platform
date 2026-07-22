@@ -1,0 +1,22 @@
+{
+  "contract_no": "EVAL-002",
+  "name": "四项全部合规销售合同",
+  "contract_type_code": "SALES",
+  "counterparty": "虚构客户乙公司",
+  "amount": 200000,
+  "currency": "CNY",
+  "document_title": "EVAL-002四项全部合规销售合同",
+  "clauses": [
+    { "clause_no": "第一条", "title": "合同性质", "content": "甲方向乙方销售通用办公设备，本合同为销售合同。" },
+    { "clause_no": "第二条", "title": "合同价款", "content": "合同总价为人民币贰拾万元整。" },
+    { "clause_no": "第三条", "title": "交付", "content": "甲方应在收到首付款后二十日内完成设备交付。" },
+    { "clause_no": "第四条", "title": "收款安排", "content": "乙方在合同生效后支付合同总价的百分之四十作为首付款，剩余百分之六十在验收合格后支付。" },
+    { "clause_no": "第五条", "title": "验收标准", "content": "乙方按照产品清单及功能标准完成验收。" },
+    { "clause_no": "第六条", "title": "售后质保", "content": "设备质保期为二十四个月，自验收合格之日起计算。" },
+    { "clause_no": "第七条", "title": "资料交付", "content": "甲方随设备交付操作手册和合格证明。" },
+    { "clause_no": "第八条", "title": "双方违约责任", "content": "任何一方未按约履行义务均应承担违约责任，并赔偿守约方因此遭受的合理损失。" },
+    { "clause_no": "第九条", "title": "法律适用", "content": "本合同适用中华人民共和国法律。" },
+    { "clause_no": "第十条", "title": "管辖法院", "content": "因本合同产生的争议由甲方即演示企业住所地有管辖权的人民法院处理。" }
+  ],
+  "metadata": { "evaluation_case_id": "02-all-pass-sales", "expected_profile": "all-pass" }
+}

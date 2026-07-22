@@ -1,0 +1,22 @@
+{
+  "contract_no": "EVAL-001",
+  "name": "四项明确冲突采购合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商甲公司",
+  "amount": 100000,
+  "currency": "CNY",
+  "document_title": "EVAL-001四项明确冲突采购合同",
+  "clauses": [
+    { "clause_no": "第一条", "title": "合同标的", "content": "乙方向甲方提供一批通用办公设备，设备不属于消耗品。" },
+    { "clause_no": "第二条", "title": "合同总价", "content": "合同总价为人民币壹拾万元整。" },
+    { "clause_no": "第三条", "title": "交付安排", "content": "乙方应在合同生效后三十日内将设备交付至项目现场。" },
+    { "clause_no": "第四条", "title": "付款方式", "content": "合同签订后五日内支付合同总价的百分之八十作为预付款，剩余百分之二十在设备交付前付清。" },
+    { "clause_no": "第五条", "title": "验收", "content": "甲方在设备到货后按照数量、外观和功能要求进行验收。" },
+    { "clause_no": "第六条", "title": "质量保证", "content": "设备质保期为六个月，自验收合格之日起计算。" },
+    { "clause_no": "第七条", "title": "不可抗力", "content": "发生不可抗力时，受影响方应及时通知对方并提供证明。" },
+    { "clause_no": "第八条", "title": "违约责任", "content": "乙方对任何延期、质量问题及其他违约行为均不承担责任，甲方未按期付款应承担全部损失。" },
+    { "clause_no": "第九条", "title": "通知", "content": "双方通知应以书面形式发送至合同载明的联系地址。" },
+    { "clause_no": "第十条", "title": "争议解决", "content": "本合同争议提交上海某仲裁委员会仲裁，仲裁地为上海市。" }
+  ],
+  "metadata": { "evaluation_case_id": "01-all-risk", "expected_profile": "all-risk" }
+}

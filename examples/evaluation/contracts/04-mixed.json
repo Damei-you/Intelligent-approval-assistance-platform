@@ -1,0 +1,21 @@
+{
+  "contract_no": "EVAL-004",
+  "name": "风险合规混合采购合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商丁公司",
+  "amount": 150000,
+  "currency": "CNY",
+  "document_title": "EVAL-004风险合规混合采购合同",
+  "clauses": [
+    { "clause_no": "第一条", "title": "采购内容", "content": "乙方向甲方提供通用办公设备，设备不属于消耗品。" },
+    { "clause_no": "第二条", "title": "价格", "content": "合同总价为人民币壹拾伍万元整。" },
+    { "clause_no": "第三条", "title": "交付", "content": "设备应在合同生效后二十日内交付。" },
+    { "clause_no": "第四条", "title": "付款", "content": "甲方在合同生效后支付百分之二十预付款，剩余百分之八十在验收合格后支付。" },
+    { "clause_no": "第五条", "title": "质保", "content": "设备质保期为六个月，自验收合格之日起计算。" },
+    { "clause_no": "第六条", "title": "售后响应", "content": "乙方收到故障通知后应在两个工作日内响应。" },
+    { "clause_no": "第七条", "title": "违约责任", "content": "任何一方违反合同约定均应承担相应违约责任，并赔偿对方合理损失。" },
+    { "clause_no": "第八条", "title": "适用法律", "content": "本合同适用中华人民共和国法律。" },
+    { "clause_no": "第九条", "title": "争议解决", "content": "双方争议提交外地仲裁机构仲裁。" }
+  ],
+  "metadata": { "evaluation_case_id": "04-mixed", "expected_profile": "mixed" }
+}

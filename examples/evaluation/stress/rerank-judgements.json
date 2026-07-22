@@ -1,0 +1,102 @@
+{
+  "case_id": "stress-50x100",
+  "relevance_scale": {
+    "2": "直接相关",
+    "1": "部分相关",
+    "0": "不相关、失效、被否定或具有误导性"
+  },
+  "queries": [
+    {
+      "check_code": "PAYMENT_TERMS",
+      "contract_judgements": [
+        { "clause_no": "C018", "relevance": 2, "reason": "当前正式预付款和尾款安排" },
+        { "clause_no": "C016", "relevance": 1, "reason": "验收是尾款条件的相关背景" },
+        { "clause_no": "C011", "relevance": 0, "reason": "历史合同且明确不适用" },
+        { "clause_no": "C012", "relevance": 0, "reason": "已否决草案" },
+        { "clause_no": "C013", "relevance": 0, "reason": "谈判建议而非合同约定" },
+        { "clause_no": "C007", "relevance": 0, "reason": "发票比例不是付款比例" },
+        { "clause_no": "C008", "relevance": 0, "reason": "履约保证金不是预付款" },
+        { "clause_no": "C009", "relevance": 0, "reason": "报销期限与付款无关" },
+        { "clause_no": "C015", "relevance": 0, "reason": "项目进度比例不是付款比例" }
+      ],
+      "policy_judgements": [
+        { "section_no": "P025", "relevance": 2, "reason": "采购预付款正式规则" },
+        { "section_no": "P024", "relevance": 1, "reason": "付款条款完整性要求" },
+        { "section_no": "P002", "relevance": 1, "reason": "预付款术语定义" },
+        { "section_no": "P012", "relevance": 0, "reason": "销售合同规则" },
+        { "section_no": "P015", "relevance": 0, "reason": "已经停止执行的历史规则" },
+        { "section_no": "P016", "relevance": 0, "reason": "未获批准的草案" },
+        { "section_no": "P009", "relevance": 0, "reason": "履约保证金规则" },
+        { "section_no": "P006", "relevance": 0, "reason": "费用报销规则" }
+      ]
+    },
+    {
+      "check_code": "WARRANTY",
+      "contract_judgements": [
+        { "clause_no": "C030", "relevance": 2, "reason": "主设备正式质保期限" },
+        { "clause_no": "C001", "relevance": 1, "reason": "确认标的是非消耗类一般设备" },
+        { "clause_no": "C032", "relevance": 1, "reason": "消耗品例外范围" },
+        { "clause_no": "C021", "relevance": 0, "reason": "不构成承诺的宣传资料" },
+        { "clause_no": "C022", "relevance": 0, "reason": "已经终止的历史合同" },
+        { "clause_no": "C024", "relevance": 0, "reason": "维护服务期不是质保期" },
+        { "clause_no": "C026", "relevance": 0, "reason": "合同有效期不是质保期" },
+        { "clause_no": "C027", "relevance": 0, "reason": "档案期限不是质保期" },
+        { "clause_no": "C029", "relevance": 0, "reason": "设计寿命不是质保承诺" },
+        { "clause_no": "C031", "relevance": 0, "reason": "软件升级期限不是主设备质保" }
+      ],
+      "policy_judgements": [
+        { "section_no": "P050", "relevance": 2, "reason": "一般设备质保正式规则" },
+        { "section_no": "P048", "relevance": 1, "reason": "一般设备定义" },
+        { "section_no": "P049", "relevance": 1, "reason": "质保起算要求" },
+        { "section_no": "P031", "relevance": 0, "reason": "电池消耗品例外" },
+        { "section_no": "P034", "relevance": 0, "reason": "停止执行的旧标准" },
+        { "section_no": "P026", "relevance": 0, "reason": "维护服务期限" },
+        { "section_no": "P027", "relevance": 0, "reason": "产品设计寿命" },
+        { "section_no": "P041", "relevance": 0, "reason": "质量档案期限" },
+        { "section_no": "P042", "relevance": 0, "reason": "合同有效期限" }
+      ]
+    },
+    {
+      "check_code": "BREACH_LIABILITY",
+      "contract_judgements": [
+        { "clause_no": "C040", "relevance": 2, "reason": "当前正式单方免责条款" },
+        { "clause_no": "C039", "relevance": 1, "reason": "只规定甲方逾期付款责任" },
+        { "clause_no": "C036", "relevance": 1, "reason": "不可抗力免责边界" },
+        { "clause_no": "C037", "relevance": 1, "reason": "保险不替代合同责任" },
+        { "clause_no": "C038", "relevance": 1, "reason": "延期协商不免除责任" },
+        { "clause_no": "C042", "relevance": 1, "reason": "仅涉及保密违约" },
+        { "clause_no": "C044", "relevance": 0, "reason": "未采纳的责任上限草案" }
+      ],
+      "policy_judgements": [
+        { "section_no": "P075", "relevance": 2, "reason": "双方违约责任正式规则" },
+        { "section_no": "P064", "relevance": 1, "reason": "双方责任原则" },
+        { "section_no": "P061", "relevance": 1, "reason": "责任上限不得掩盖全面免责" },
+        { "section_no": "P063", "relevance": 0, "reason": "已经停止使用的旧模板" },
+        { "section_no": "P062", "relevance": 0, "reason": "未经批准的免责草案" },
+        { "section_no": "P051", "relevance": 1, "reason": "不可抗力有限免责" },
+        { "section_no": "P054", "relevance": 1, "reason": "保险与责任关系" }
+      ]
+    },
+    {
+      "check_code": "DISPUTE_RESOLUTION",
+      "contract_judgements": [
+        { "clause_no": "C050", "relevance": 2, "reason": "正式法律适用和管辖条款" },
+        { "clause_no": "C046", "relevance": 0, "reason": "签订地不是管辖约定" },
+        { "clause_no": "C047", "relevance": 0, "reason": "交付地不是管辖约定" },
+        { "clause_no": "C048", "relevance": 0, "reason": "谈判地不是管辖约定" },
+        { "clause_no": "C049", "relevance": 0, "reason": "通知地址不是管辖约定" }
+      ],
+      "policy_judgements": [
+        { "section_no": "P100", "relevance": 2, "reason": "正式争议解决规则" },
+        { "section_no": "P080", "relevance": 1, "reason": "法律适用要求" },
+        { "section_no": "P099", "relevance": 1, "reason": "争议条款完整性" },
+        { "section_no": "P076", "relevance": 0, "reason": "签订地点干扰" },
+        { "section_no": "P077", "relevance": 0, "reason": "交付地点干扰" },
+        { "section_no": "P078", "relevance": 0, "reason": "谈判地点干扰" },
+        { "section_no": "P079", "relevance": 0, "reason": "通知地址干扰" },
+        { "section_no": "P081", "relevance": 0, "reason": "停止执行的历史仲裁标准" },
+        { "section_no": "P082", "relevance": 0, "reason": "未获批准的仲裁草案" }
+      ]
+    }
+  ]
+}

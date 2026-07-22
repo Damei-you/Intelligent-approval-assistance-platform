@@ -1,0 +1,21 @@
+{
+  "contract_no": "EVAL-010",
+  "name": "否定关系与例外范围排序测试合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商子公司",
+  "amount": 140000,
+  "currency": "CNY",
+  "document_title": "EVAL-010否定关系与例外范围排序测试合同",
+  "clauses": [
+    { "clause_no": "说明一", "title": "宣传资料", "content": "宣传手册曾出现六个月质保字样，但宣传内容不构成本合同承诺。" },
+    { "clause_no": "说明二", "title": "消耗品附件", "content": "随机附送的电池属于消耗品，可以适用较短保障期限，但该例外不适用于主设备。" },
+    { "clause_no": "第一条", "title": "合同标的范围", "content": "本合同主要标的是非消耗类通用办公主设备。" },
+    { "clause_no": "第二条", "title": "付款", "content": "预付款百分之二十，尾款在主设备验收合格后支付。" },
+    { "clause_no": "第三条", "title": "主设备正式质保", "content": "非消耗类主设备质保期为二十四个月，自验收合格之日起计算。" },
+    { "clause_no": "第四条", "title": "维护响应", "content": "质保期内乙方应在收到故障通知后两个工作日内响应。" },
+    { "clause_no": "第五条", "title": "违约责任", "content": "任何一方违约均应承担相应责任，不得免除自身违约造成的损失。" },
+    { "clause_no": "第六条", "title": "适用法律", "content": "本合同适用中华人民共和国法律。" },
+    { "clause_no": "第七条", "title": "争议管辖", "content": "争议由甲方即演示企业住所地有管辖权的人民法院处理。" }
+  ],
+  "metadata": { "evaluation_case_id": "10-negation-exception", "rerank_challenge": true }
+}

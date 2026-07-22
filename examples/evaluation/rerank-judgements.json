@@ -1,0 +1,127 @@
+{
+  "dataset_version": "1.0",
+  "relevance_scale": {
+    "2": "直接支持检查结论，应进入最终上下文",
+    "1": "部分相关，可作为补充证据",
+    "0": "不相关、失效、被否定或具有误导性"
+  },
+  "queries": [
+    {
+      "case_id": "07-distractors",
+      "check_code": "PAYMENT_TERMS",
+      "contract_judgements": [
+        { "clause_no": "第三条", "relevance": 2, "reason": "当前合同正式付款条款" },
+        { "clause_no": "背景一", "relevance": 0, "reason": "历史合同约定且明确不适用" },
+        { "clause_no": "第二条", "relevance": 1, "reason": "只有合同总价，没有付款安排" }
+      ],
+      "policy_judgements": [
+        { "section_no": "第三条", "relevance": 2, "reason": "采购预付款直接规则" },
+        { "section_no": "第五条", "relevance": 0, "reason": "履约保证金不是预付款" },
+        { "section_no": "第六条", "relevance": 0, "reason": "费用报销与合同付款无关" }
+      ]
+    },
+    {
+      "case_id": "07-distractors",
+      "check_code": "WARRANTY",
+      "contract_judgements": [
+        { "clause_no": "第五条", "relevance": 2, "reason": "正式质保承诺" },
+        { "clause_no": "背景二", "relevance": 0, "reason": "宣传资料且明确不构成承诺" }
+      ],
+      "policy_judgements": [
+        { "section_no": "第九条", "relevance": 2, "reason": "一般设备质保规则" },
+        { "section_no": "第八条", "relevance": 0, "reason": "维护服务期限不等于质保期" },
+        { "section_no": "第十九条", "relevance": 0, "reason": "档案期限不等于质保期" }
+      ]
+    },
+    {
+      "case_id": "09-history-vs-current",
+      "check_code": "PAYMENT_TERMS",
+      "contract_judgements": [
+        { "clause_no": "第二条", "relevance": 2, "reason": "本合同当前有效付款条款" },
+        { "clause_no": "说明一", "relevance": 0, "reason": "已经完成的历史订单" },
+        { "clause_no": "说明二", "relevance": 0, "reason": "未签署且已否决的草案" },
+        { "clause_no": "第三条", "relevance": 0, "reason": "履约保证金不是预付款" }
+      ],
+      "policy_judgements": [
+        { "section_no": "第三条", "relevance": 2, "reason": "采购预付款当前规则" },
+        { "section_no": "第二条", "relevance": 1, "reason": "提供预付款和保证金的术语区分" },
+        { "section_no": "第五条", "relevance": 0, "reason": "仅规定履约保证金" }
+      ]
+    },
+    {
+      "case_id": "10-negation-exception",
+      "check_code": "WARRANTY",
+      "contract_judgements": [
+        { "clause_no": "第三条", "relevance": 2, "reason": "非消耗类主设备正式质保" },
+        { "clause_no": "第一条", "relevance": 1, "reason": "确认主设备不是消耗品" },
+        { "clause_no": "说明一", "relevance": 0, "reason": "被明确否定的宣传内容" },
+        { "clause_no": "说明二", "relevance": 1, "reason": "仅说明附送电池例外范围" }
+      ],
+      "policy_judgements": [
+        { "section_no": "第九条", "relevance": 2, "reason": "一般设备质保主规则" },
+        { "section_no": "第十条", "relevance": 1, "reason": "消耗品例外，用于确认不适用范围" },
+        { "section_no": "第十一条", "relevance": 0, "reason": "合同并非纯服务项目" }
+      ]
+    },
+    {
+      "case_id": "11-similar-numbers-periods",
+      "check_code": "PAYMENT_TERMS",
+      "contract_judgements": [
+        { "clause_no": "第六条", "relevance": 2, "reason": "正式预付款比例" },
+        { "clause_no": "第五条", "relevance": 0, "reason": "百分之十是履约保证金" },
+        { "clause_no": "第四条", "relevance": 0, "reason": "三十日是报销期限" },
+        { "clause_no": "第一条", "relevance": 0, "reason": "三十是设备数量" }
+      ],
+      "policy_judgements": [
+        { "section_no": "第三条", "relevance": 2, "reason": "采购预付款规则" },
+        { "section_no": "第五条", "relevance": 0, "reason": "保证金比例干扰" },
+        { "section_no": "第六条", "relevance": 0, "reason": "三十日报销期限干扰" }
+      ]
+    },
+    {
+      "case_id": "11-similar-numbers-periods",
+      "check_code": "WARRANTY",
+      "contract_judgements": [
+        { "clause_no": "第七条", "relevance": 2, "reason": "设备正式质保期限" },
+        { "clause_no": "第二条", "relevance": 0, "reason": "交付期限" },
+        { "clause_no": "第三条", "relevance": 0, "reason": "合同有效期" },
+        { "clause_no": "第八条", "relevance": 0, "reason": "档案保存期限" }
+      ],
+      "policy_judgements": [
+        { "section_no": "第九条", "relevance": 2, "reason": "设备质保期限规则" },
+        { "section_no": "第十九条", "relevance": 0, "reason": "档案期限干扰" },
+        { "section_no": "第八条", "relevance": 0, "reason": "维护服务期限干扰" }
+      ]
+    },
+    {
+      "case_id": "12-policy-hard-negatives",
+      "check_code": "PAYMENT_TERMS",
+      "contract_judgements": [
+        { "clause_no": "第三条", "relevance": 2, "reason": "采购预付款为百分之四十" },
+        { "clause_no": "第四条", "relevance": 0, "reason": "保证金比例" },
+        { "clause_no": "第五条", "relevance": 0, "reason": "报销期限" }
+      ],
+      "policy_judgements": [
+        { "section_no": "第三条", "relevance": 2, "reason": "采购合同适用规则" },
+        { "section_no": "第四条", "relevance": 0, "reason": "销售合同首付款规则" },
+        { "section_no": "第五条", "relevance": 0, "reason": "履约保证金规则" },
+        { "section_no": "第六条", "relevance": 0, "reason": "费用报销规则" }
+      ]
+    },
+    {
+      "case_id": "12-policy-hard-negatives",
+      "check_code": "DISPUTE_RESOLUTION",
+      "contract_judgements": [
+        { "clause_no": "第十一条", "relevance": 2, "reason": "正式法律适用与管辖条款" },
+        { "clause_no": "第九条", "relevance": 0, "reason": "签订地点不是管辖地点" },
+        { "clause_no": "第十条", "relevance": 0, "reason": "交付地点不是管辖地点" }
+      ],
+      "policy_judgements": [
+        { "section_no": "第十五条", "relevance": 2, "reason": "正式争议解决规则" },
+        { "section_no": "第十六条", "relevance": 0, "reason": "签订地点干扰" },
+        { "section_no": "第十七条", "relevance": 0, "reason": "交付地点干扰" },
+        { "section_no": "第十八条", "relevance": 0, "reason": "谈判地点干扰" }
+      ]
+    }
+  ]
+}

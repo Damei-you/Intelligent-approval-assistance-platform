@@ -38,6 +38,7 @@ import {
   previewPolicyFile,
 } from './api/contracts'
 import RiskReviewPanel from './components/RiskReviewPanel.vue'
+import ApprovalPanel from './components/ApprovalPanel.vue'
 
 const contractSampleJson = `{
   "contract_no": "CG-2026-001",
@@ -404,6 +405,7 @@ function formatBytes(size) {
       <nav class="product-nav" aria-label="主要功能">
         <button type="button" :class="{ active: appSection === 'imports' }" @click="switchAppSection('imports')">知识导入</button>
         <button type="button" :class="{ active: appSection === 'review' }" @click="switchAppSection('review')">风险审查</button>
+        <button type="button" :class="{ active: appSection === 'approval' }" @click="switchAppSection('approval')">辅助审批</button>
       </nav>
       <div class="topbar-actions">
         <div class="api-status" :class="healthStatus">
@@ -729,7 +731,8 @@ function formatBytes(size) {
       </section>
     </main>
 
-    <RiskReviewPanel v-else />
+    <RiskReviewPanel v-else-if="appSection === 'review'" />
+    <ApprovalPanel v-else />
 
     <footer>
       <span>Intelligent Approval Assistance Platform</span>

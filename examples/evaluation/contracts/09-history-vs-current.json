@@ -1,0 +1,21 @@
+{
+  "contract_no": "EVAL-009",
+  "name": "历史约定与当前条款排序测试合同",
+  "contract_type_code": "PURCHASE",
+  "counterparty": "虚构供应商癸公司",
+  "amount": 160000,
+  "currency": "CNY",
+  "document_title": "EVAL-009历史约定与当前条款排序测试合同",
+  "clauses": [
+    { "clause_no": "说明一", "title": "历史合作回顾", "content": "二〇二四年历史订单采用百分之八十预付款，该订单已经履行完毕。" },
+    { "clause_no": "说明二", "title": "草案记录", "content": "早期未签署草案曾建议百分之五十预付款，双方已经明确否决。" },
+    { "clause_no": "第一条", "title": "合同标的", "content": "本合同采购非消耗类通用办公设备。" },
+    { "clause_no": "第二条", "title": "当前有效付款条款", "content": "本合同最终约定预付款比例为百分之二十，剩余款项在验收合格后支付。" },
+    { "clause_no": "第三条", "title": "履约保证金", "content": "乙方提交合同总价百分之十的履约保证金，该款项不是预付款。" },
+    { "clause_no": "第四条", "title": "质保", "content": "设备质保期为十八个月，自验收合格之日起计算。" },
+    { "clause_no": "第五条", "title": "违约责任", "content": "双方任何一方违约均应承担责任并赔偿合理损失。" },
+    { "clause_no": "第六条", "title": "法律适用", "content": "本合同适用中华人民共和国法律。" },
+    { "clause_no": "第七条", "title": "管辖", "content": "争议由甲方即演示企业住所地有管辖权的人民法院处理。" }
+  ],
+  "metadata": { "evaluation_case_id": "09-history-vs-current", "rerank_challenge": true }
+}
