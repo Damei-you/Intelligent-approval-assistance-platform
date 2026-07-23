@@ -605,13 +605,13 @@ function formatSimilarity(value) {
                 <span><FileSearch :size="15" />本项检索候选</span>
                 <small>合同 {{ candidatesFor(finding, 'CONTRACT').length }} 条 · 制度 {{ candidatesFor(finding, 'POLICY').length }} 条</small>
               </summary>
-              <p class="candidate-explanation">合同先向量召回 Top 20，再重排取 Top 5；重排最高分低于 0.45 时判定依据不足。制度先向量召回 Top 10，再保留重排分不低于 0.60 的 Top 5。“入选”表示已进入模型上下文，“已采纳”表示模型最终引用且后端已经保存。</p>
+              <p class="candidate-explanation">合同先向量召回 Top 20，再重排取 Top 5；重排最高分低于 0.45 时判定依据不足。制度先向量召回 Top 10，再保留重排分不低于 0.60 的 Top 5。任一侧不足时只对缺失来源补检一次。“入选”表示已进入模型上下文，“已采纳”表示模型最终引用且后端已经保存。</p>
               <div class="candidate-grid">
                 <section>
                   <h4><FileSearch :size="14" />合同候选</h4>
-                  <article v-for="item in candidatesFor(finding, 'CONTRACT')" :key="item.chunk_id" :class="{ selected: item.selected_as_evidence, contextual: item.selected_for_context }">
+                  <article v-for="item in candidatesFor(finding, 'CONTRACT')" :key="`${item.chunk_id}-${item.retrieval_attempt}`" :class="{ selected: item.selected_as_evidence, contextual: item.selected_for_context }">
                     <div>
-                      <b>向量 #{{ item.rank_no }}</b>
+                      <b>{{ item.retrieval_attempt === 2 ? '补检' : '首次' }} · 向量 #{{ item.rank_no }}</b>
                       <b v-if="item.rerank_rank_no" class="rerank-rank">重排 #{{ item.rerank_rank_no }}</b>
                       <span>{{ item.clause_no }} {{ item.title }}</span>
                       <em>V {{ formatSimilarity(item.similarity_score) }}<template v-if="item.rerank_score !== null && item.rerank_score !== undefined"> · R {{ formatSimilarity(item.rerank_score) }}</template></em>
@@ -623,9 +623,9 @@ function formatSimilarity(value) {
                 </section>
                 <section>
                   <h4><BookOpen :size="14" />制度候选</h4>
-                  <article v-for="item in candidatesFor(finding, 'POLICY')" :key="item.chunk_id" :class="{ selected: item.selected_as_evidence, contextual: item.selected_for_context }">
+                  <article v-for="item in candidatesFor(finding, 'POLICY')" :key="`${item.chunk_id}-${item.retrieval_attempt}`" :class="{ selected: item.selected_as_evidence, contextual: item.selected_for_context }">
                     <div>
-                      <b>向量 #{{ item.rank_no }}</b>
+                      <b>{{ item.retrieval_attempt === 2 ? '补检' : '首次' }} · 向量 #{{ item.rank_no }}</b>
                       <b v-if="item.rerank_rank_no" class="rerank-rank">重排 #{{ item.rerank_rank_no }}</b>
                       <span>{{ item.document_title }} · {{ item.clause_no }} {{ item.title }}</span>
                       <em>V {{ formatSimilarity(item.similarity_score) }}<template v-if="item.rerank_score !== null && item.rerank_score !== undefined"> · R {{ formatSimilarity(item.rerank_score) }}</template></em>

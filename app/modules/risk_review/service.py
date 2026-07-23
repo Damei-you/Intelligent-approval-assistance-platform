@@ -26,6 +26,15 @@ CHECK_QUERIES = {
     "DISPUTE_RESOLUTION": "合同适用法律、管辖法院、仲裁约定，以及制度中的争议解决和管辖要求",
 }
 
+# 第二次查询不重复首次的概括性表述，而是补充常见条款名称和同义表达。
+# 该查询由后端固定生成，避免让模型自由决定检索次数或扩大到当前合同、当前制度之外。
+CHECK_RETRY_QUERIES = {
+    "PAYMENT_TERMS": "价款支付条件、预付款上限、付款比例、验收、发票、账期和逾期付款约定",
+    "WARRANTY": "质量保证、保修期限、缺陷责任、维修更换、售后服务和质保金约定",
+    "BREACH_LIABILITY": "违约金计算、损失赔偿、责任限制、逾期履行、解除责任和赔偿上限约定",
+    "DISPUTE_RESOLUTION": "适用法律、诉讼管辖、法院所在地、仲裁机构、仲裁地点和争议协商约定",
+}
+
 CONTRACT_RERANK_INSTRUCT = (
     "Given a contract risk query, retrieve relevant clauses from the current contract."
 )
@@ -44,6 +53,24 @@ class ReviewState(TypedDict, total=False):
     # LangGraph 会把各分支的一项列表相加，而不是让后完成的分支覆盖先完成的结果。
     findings: Annotated[list[dict[str, Any]], add]
     result: dict[str, Any]
+
+
+class EvidenceCheckState(TypedDict, total=False):
+    """单项检查条件子图的状态，最多保存两轮检索和最终风险项摘要。"""
+
+    review_run_id: UUID
+    job_id: UUID
+    context: dict[str, Any]
+    check_item: dict[str, Any]
+    check_code: str
+    node_run_id: UUID
+    initial_query: str
+    retrieval_attempts: int
+    contract_chunks: list[dict[str, Any]]
+    policy_chunks: list[dict[str, Any]]
+    initial_missing_sources: list[str]
+    retried_sources: list[str]
+    finding: dict[str, Any]
 
 
 class ReviewModelProvider:
@@ -298,162 +325,272 @@ class RiskReviewService:
         return {"context": context}
 
     def _build_check_node(self, code: str, sequence_no: int):
-        # LangGraph 的节点需要接收单个 state 参数，闭包把当前检查项代码绑定进节点函数。
+        # 每个固定检查项内部使用同一张条件子图：首次证据充分时直接判断；不足时只补检一次。
+        # 子图仍封装在主图的一个并行分支中，因此四项检查可以继续并发执行。
+        check_graph = StateGraph(EvidenceCheckState)
+        check_graph.add_node("retrieve_initial", self._retrieve_initial_evidence)
+        check_graph.add_node("retrieve_retry", self._retrieve_missing_evidence)
+        check_graph.add_node("judge", self._judge_with_evidence)
+        check_graph.add_node("insufficient", self._finish_as_insufficient)
+        check_graph.add_edge(START, "retrieve_initial")
+        # add_conditional_edges 会读取节点完成后的最新状态，并选择唯一的下一条边。
+        # 路由函数只检查可验证的候选集合，不使用模型自报置信度，也不会产生无限循环。
+        check_graph.add_conditional_edges(
+            "retrieve_initial",
+            self._route_after_initial_retrieval,
+            {"judge": "judge", "retry": "retrieve_retry"},
+        )
+        check_graph.add_conditional_edges(
+            "retrieve_retry",
+            self._route_after_retry,
+            {"judge": "judge", "insufficient": "insufficient"},
+        )
+        check_graph.add_edge("judge", END)
+        check_graph.add_edge("insufficient", END)
+        compiled_check_graph = check_graph.compile()
+
+        # LangGraph 的节点需要接收单个 state 参数，闭包把当前检查项代码和顺序绑定进节点函数。
         def review_check(state: ReviewState) -> dict[str, Any]:
-            finding = self._review_check(state, code, sequence_no)
+            context = state["context"]
+            check_item = self.repository.get_check_item(context["contract_id"], code)
+            query = CHECK_QUERIES[code]
+            node_run_id = self.repository.create_node_run(
+                context["workflow_run_id"],
+                code.lower(),
+                sequence_no,
+                {"check_code": code, "query": query, "max_retrieval_attempts": 2},
+            )
+            check_state = compiled_check_graph.invoke(
+                {
+                    "review_run_id": state["review_run_id"],
+                    "job_id": state["job_id"],
+                    "context": context,
+                    "check_item": check_item,
+                    "check_code": code,
+                    "node_run_id": node_run_id,
+                    "initial_query": query,
+                    "retrieval_attempts": 0,
+                    "contract_chunks": [],
+                    "policy_chunks": [],
+                    "initial_missing_sources": [],
+                    "retried_sources": [],
+                }
+            )
             # 每个并行分支只返回自己的结果，由 ReviewState 上的 add reducer 安全合并。
-            return {"findings": [finding]}
+            return {"findings": [check_state["finding"]]}
 
         return review_check
 
-    def _review_check(
-        self, state: ReviewState, code: str, sequence_no: int
+    def _retrieve_initial_evidence(
+        self, state: EvidenceCheckState
     ) -> dict[str, Any]:
+        """执行首次合同与制度检索，并保存条件路由所需的缺失来源。"""
+
+        evidence = self._retrieve_evidence_sources(
+            state,
+            state["initial_query"],
+            attempt=1,
+            sources=("CONTRACT", "POLICY"),
+        )
+        missing_sources = _missing_evidence_sources(
+            evidence["contract_chunks"], evidence["policy_chunks"]
+        )
+        return {
+            **evidence,
+            "retrieval_attempts": 1,
+            "initial_missing_sources": missing_sources,
+        }
+
+    def _route_after_initial_retrieval(self, state: EvidenceCheckState) -> str:
+        """首次证据完整时直接判断，否则进入唯一一次补检。"""
+
+        return "retry" if state["initial_missing_sources"] else "judge"
+
+    def _retrieve_missing_evidence(
+        self, state: EvidenceCheckState
+    ) -> dict[str, Any]:
+        """仅对首次缺失的来源使用固定补充查询再检索一次。"""
+
+        missing_sources = state["initial_missing_sources"]
+        retry_query = _build_retry_query(
+            state["check_code"], state["check_item"], missing_sources
+        )
+        evidence = self._retrieve_evidence_sources(
+            state,
+            retry_query,
+            attempt=2,
+            sources=tuple(missing_sources),
+        )
+        return {
+            **evidence,
+            "retrieval_attempts": 2,
+            "retried_sources": list(missing_sources),
+        }
+
+    def _route_after_retry(self, state: EvidenceCheckState) -> str:
+        """补检后仍缺少任一来源时结束为信息不足，不再继续循环。"""
+
+        missing_sources = _missing_evidence_sources(
+            state["contract_chunks"], state["policy_chunks"]
+        )
+        return "insufficient" if missing_sources else "judge"
+
+    def _retrieve_evidence_sources(
+        self,
+        state: EvidenceCheckState,
+        query: str,
+        *,
+        attempt: int,
+        sources: tuple[str, ...],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """检索指定证据来源；补检时不重复请求首次已经充分的一侧。"""
+
         context = state["context"]
-        check_item = self.repository.get_check_item(context["contract_id"], code)
-        query = CHECK_QUERIES[code]
-        node_run_id = self.repository.create_node_run(
-            context["workflow_run_id"],
-            code.lower(),
-            sequence_no,
-            {"check_code": code, "query": query},
-        )
+        node_run_id = state["node_run_id"]
         query_vector = self.embedding_provider.embed_documents([query])[0]
-        contract_candidates = self.repository.search_contract_chunks(
-            context["contract_document_id"],
-            query_vector,
-            settings.contract_recall_top_k,
-        )
-        contract_rerank_strategy = "RERANK"
-        contract_rerank_error = None
-        contract_rerank_latency_ms = None
-        contract_query_score = None
-        contract_confidence = "REJECTED"
-        try:
-            contract_rerank_result = self.rerank_provider.rerank(
-                query,
-                contract_candidates,
-                settings.contract_final_top_k,
-                instruct=CONTRACT_RERANK_INSTRUCT,
+        result: dict[str, list[dict[str, Any]]] = {}
+        tracking_filters = {
+            "attempt": attempt,
+            "query_kind": "INITIAL" if attempt == 1 else "SUPPLEMENTAL",
+        }
+
+        if "CONTRACT" in sources:
+            contract_candidates = self.repository.search_contract_chunks(
+                context["contract_document_id"],
+                query_vector,
+                settings.contract_recall_top_k,
             )
-            contract_candidates = contract_rerank_result.all_hits
-            contract_rerank_latency_ms = contract_rerank_result.latency_ms
-            contract_query_score = _first_rerank_score(
-                contract_rerank_result.selected_hits
-            )
-            if (
-                contract_query_score is not None
-                and contract_query_score >= settings.contract_rerank_query_min_score
-            ):
-                contract_chunks = contract_rerank_result.selected_hits
-                contract_confidence = (
-                    "LOW"
-                    if contract_query_score
-                    < settings.contract_rerank_low_confidence_score
-                    else "NORMAL"
+            contract_rerank_strategy = "RERANK"
+            contract_rerank_error = None
+            contract_rerank_latency_ms = None
+            contract_query_score = None
+            contract_confidence = "REJECTED"
+            try:
+                contract_rerank_result = self.rerank_provider.rerank(
+                    query,
+                    contract_candidates,
+                    settings.contract_final_top_k,
+                    instruct=CONTRACT_RERANK_INSTRUCT,
                 )
-            else:
-                # 合同阈值是查询级门槛：第一名不可信时整组候选均不能进入模型上下文。
-                contract_chunks = []
-                _mark_selected_candidates(contract_candidates, [])
-        except Exception as exc:
-            # Rerank 不可用时保留原有向量检索能力，不让质量增强步骤中断整项审查。
-            contract_rerank_strategy = "RERANK_FALLBACK"
-            contract_rerank_error = _safe_error_message(exc)
-            contract_candidates, contract_chunks = _build_vector_fallback(
-                contract_candidates, settings.contract_final_top_k
-            )
-            contract_confidence = "FALLBACK"
-
-        policy_candidates = self.repository.search_policy_chunks(
-            query_vector, settings.policy_recall_top_k
-        )
-        policy_rerank_strategy = "RERANK"
-        policy_rerank_error = None
-        policy_rerank_latency_ms = None
-        try:
-            policy_rerank_result = self.rerank_provider.rerank(
-                query,
-                policy_candidates,
-                settings.policy_final_top_k,
-                instruct=POLICY_RERANK_INSTRUCT,
-            )
-            policy_candidates = policy_rerank_result.all_hits
-            policy_chunks = _filter_selected_candidates(
-                policy_rerank_result.selected_hits,
-                policy_candidates,
-                settings.policy_rerank_min_score,
-            )
-            policy_rerank_latency_ms = policy_rerank_result.latency_ms
-        except Exception as exc:
-            # 重排序是质量增强步骤，不应让整项风险审查失败；失败时使用向量排名前 5 条降级。
-            policy_rerank_strategy = "RERANK_FALLBACK"
-            policy_rerank_error = _safe_error_message(exc)
-            policy_candidates, policy_chunks = _build_vector_fallback(
-                policy_candidates, settings.policy_final_top_k
-            )
-        self.repository.record_retrieval(
-            node_run_id,
-            query,
-            {
-                "document_id": str(context["contract_document_id"]),
-                "chunk_type": "CONTRACT_CLAUSE",
-                "query_min_score": settings.contract_rerank_query_min_score,
-                "low_confidence_score": settings.contract_rerank_low_confidence_score,
-                "query_score": contract_query_score,
-                "confidence_band": contract_confidence,
-            },
-            contract_candidates,
-            settings.embedding_model,
-            final_top_k=settings.contract_final_top_k,
-            ranking_strategy=contract_rerank_strategy,
-            rerank_model=settings.rerank_model,
-            rerank_latency_ms=contract_rerank_latency_ms,
-            rerank_error=contract_rerank_error,
-        )
-        self.repository.record_retrieval(
-            node_run_id,
-            query,
-            {
-                "document_type": "POLICY",
-                "is_current": True,
-                "chunk_type": "POLICY_SECTION",
-                "candidate_min_score": settings.policy_rerank_min_score,
-                "high_confidence_score": settings.rerank_high_confidence_score,
-            },
-            policy_candidates,
-            settings.embedding_model,
-            final_top_k=settings.policy_final_top_k,
-            ranking_strategy=policy_rerank_strategy,
-            rerank_model=settings.rerank_model,
-            rerank_latency_ms=policy_rerank_latency_ms,
-            rerank_error=policy_rerank_error,
-        )
-
-        if not contract_chunks or not policy_chunks:
-            missing = "合同相关条款" if not contract_chunks else "制度依据"
-            decision = ModelRiskDecision(
-                status="INSUFFICIENT_INFORMATION",
-                severity=check_item["default_severity"],
-                title=f"{check_item['name']}信息不足",
-                description=f"未检索到足够的{missing}，无法形成可靠结论。",
-                suggestion=f"请补充或确认{missing}后重新审查。",
-                confidence=0,
-                contract_refs=["C1"] if contract_chunks else [],
-                policy_refs=["P1"] if policy_chunks else [],
-            )
-        else:
-            decision, usage = self.model_provider.judge(
-                check_item, contract_chunks, policy_chunks
-            )
-            self.repository.record_llm_call(
+                contract_candidates = contract_rerank_result.all_hits
+                contract_rerank_latency_ms = contract_rerank_result.latency_ms
+                contract_query_score = _first_rerank_score(
+                    contract_rerank_result.selected_hits
+                )
+                if (
+                    contract_query_score is not None
+                    and contract_query_score
+                    >= settings.contract_rerank_query_min_score
+                ):
+                    contract_chunks = contract_rerank_result.selected_hits
+                    contract_confidence = (
+                        "LOW"
+                        if contract_query_score
+                        < settings.contract_rerank_low_confidence_score
+                        else "NORMAL"
+                    )
+                else:
+                    # 合同阈值是查询级门槛：第一名不可信时整组候选均不能进入模型上下文。
+                    contract_chunks = []
+                    _mark_selected_candidates(contract_candidates, [])
+            except Exception as exc:
+                # Rerank 不可用时保留原有向量检索能力，不让质量增强步骤中断整项审查。
+                contract_rerank_strategy = "RERANK_FALLBACK"
+                contract_rerank_error = _safe_error_message(exc)
+                contract_candidates, contract_chunks = _build_vector_fallback(
+                    contract_candidates, settings.contract_final_top_k
+                )
+                contract_confidence = "FALLBACK"
+            self.repository.record_retrieval(
                 node_run_id,
-                settings.review_model,
-                code,
-                decision.model_dump(),
-                usage["input_tokens"],
-                usage["output_tokens"],
+                query,
+                {
+                    **tracking_filters,
+                    "document_id": str(context["contract_document_id"]),
+                    "chunk_type": "CONTRACT_CLAUSE",
+                    "query_min_score": settings.contract_rerank_query_min_score,
+                    "low_confidence_score": settings.contract_rerank_low_confidence_score,
+                    "query_score": contract_query_score,
+                    "confidence_band": contract_confidence,
+                },
+                contract_candidates,
+                settings.embedding_model,
+                final_top_k=settings.contract_final_top_k,
+                ranking_strategy=contract_rerank_strategy,
+                rerank_model=settings.rerank_model,
+                rerank_latency_ms=contract_rerank_latency_ms,
+                rerank_error=contract_rerank_error,
             )
+            result["contract_chunks"] = contract_chunks
+
+        if "POLICY" in sources:
+            policy_candidates = self.repository.search_policy_chunks(
+                query_vector, settings.policy_recall_top_k
+            )
+            policy_rerank_strategy = "RERANK"
+            policy_rerank_error = None
+            policy_rerank_latency_ms = None
+            try:
+                policy_rerank_result = self.rerank_provider.rerank(
+                    query,
+                    policy_candidates,
+                    settings.policy_final_top_k,
+                    instruct=POLICY_RERANK_INSTRUCT,
+                )
+                policy_candidates = policy_rerank_result.all_hits
+                policy_chunks = _filter_selected_candidates(
+                    policy_rerank_result.selected_hits,
+                    policy_candidates,
+                    settings.policy_rerank_min_score,
+                )
+                policy_rerank_latency_ms = policy_rerank_result.latency_ms
+            except Exception as exc:
+                # 重排序是质量增强步骤，不应让整项风险审查失败；失败时使用向量排名前 5 条降级。
+                policy_rerank_strategy = "RERANK_FALLBACK"
+                policy_rerank_error = _safe_error_message(exc)
+                policy_candidates, policy_chunks = _build_vector_fallback(
+                    policy_candidates, settings.policy_final_top_k
+                )
+            self.repository.record_retrieval(
+                node_run_id,
+                query,
+                {
+                    **tracking_filters,
+                    "document_type": "POLICY",
+                    "is_current": True,
+                    "chunk_type": "POLICY_SECTION",
+                    "candidate_min_score": settings.policy_rerank_min_score,
+                    "high_confidence_score": settings.rerank_high_confidence_score,
+                },
+                policy_candidates,
+                settings.embedding_model,
+                final_top_k=settings.policy_final_top_k,
+                ranking_strategy=policy_rerank_strategy,
+                rerank_model=settings.rerank_model,
+                rerank_latency_ms=policy_rerank_latency_ms,
+                rerank_error=policy_rerank_error,
+            )
+            result["policy_chunks"] = policy_chunks
+
+        return result
+
+    def _judge_with_evidence(self, state: EvidenceCheckState) -> dict[str, Any]:
+        """证据完整时调用模型，并校验模型只能引用本次候选标签。"""
+
+        check_item = state["check_item"]
+        contract_chunks = state["contract_chunks"]
+        policy_chunks = state["policy_chunks"]
+        decision, usage = self.model_provider.judge(
+            check_item, contract_chunks, policy_chunks
+        )
+        self.repository.record_llm_call(
+            state["node_run_id"],
+            settings.review_model,
+            state["check_code"],
+            decision.model_dump(),
+            usage["input_tokens"],
+            usage["output_tokens"],
+        )
 
         selected_contract = _select_references(decision.contract_refs, contract_chunks, "C")
         selected_policy = _select_references(decision.policy_refs, policy_chunks, "P")
@@ -473,19 +610,76 @@ class RiskReviewService:
             selected_contract = contract_chunks[:1]
             selected_policy = policy_chunks[:1]
 
+        finding = self._persist_check_result(
+            state,
+            decision,
+            selected_contract,
+            selected_policy,
+            route="MODEL_JUDGMENT",
+        )
+        return {"finding": finding}
+
+    def _finish_as_insufficient(
+        self, state: EvidenceCheckState
+    ) -> dict[str, Any]:
+        """唯一一次补检仍失败时生成确定性信息不足结论，不调用聊天模型。"""
+
+        contract_chunks = state["contract_chunks"]
+        policy_chunks = state["policy_chunks"]
+        missing_sources = _missing_evidence_sources(contract_chunks, policy_chunks)
+        missing_label = _format_missing_evidence_sources(missing_sources)
+        check_item = state["check_item"]
+        decision = ModelRiskDecision(
+            status="INSUFFICIENT_INFORMATION",
+            severity=check_item["default_severity"],
+            title=f"{check_item['name']}信息不足",
+            description=f"首次检索和一次补检后仍缺少足够的{missing_label}，无法形成可靠结论。",
+            suggestion=f"请补充或确认{missing_label}后重新审查。",
+            confidence=0,
+            contract_refs=["C1"] if contract_chunks else [],
+            policy_refs=["P1"] if policy_chunks else [],
+        )
+        finding = self._persist_check_result(
+            state,
+            decision,
+            contract_chunks[:1],
+            policy_chunks[:1],
+            route="INSUFFICIENT_INFORMATION",
+        )
+        return {"finding": finding}
+
+    def _persist_check_result(
+        self,
+        state: EvidenceCheckState,
+        decision: ModelRiskDecision,
+        selected_contract: list[dict[str, Any]],
+        selected_policy: list[dict[str, Any]],
+        *,
+        route: str,
+    ) -> dict[str, Any]:
+        """统一保存两条条件分支的业务结果和可追溯路由摘要。"""
+
         finding_id = self.repository.save_finding(
             state["review_run_id"],
-            check_item["id"],
+            state["check_item"]["id"],
             decision,
             selected_contract,
             selected_policy,
         )
+        final_missing_sources = _missing_evidence_sources(
+            state["contract_chunks"], state["policy_chunks"]
+        )
         self.repository.finish_node(
-            node_run_id,
+            state["node_run_id"],
             {
                 "finding_id": str(finding_id),
                 "status": decision.status,
                 "severity": decision.severity,
+                "route": route,
+                "retrieval_attempts": state["retrieval_attempts"],
+                "initial_missing_sources": state["initial_missing_sources"],
+                "retried_sources": state["retried_sources"],
+                "final_missing_sources": final_missing_sources,
                 "contract_evidence_count": len(selected_contract),
                 "policy_evidence_count": len(selected_policy),
             },
@@ -493,7 +687,7 @@ class RiskReviewService:
         self.repository.update_check_progress(state["job_id"], state["review_run_id"])
         return {
             "finding_id": str(finding_id),
-            "check_code": code,
+            "check_code": state["check_code"],
             "status": decision.status,
             "severity": decision.severity,
         }
@@ -509,6 +703,44 @@ class RiskReviewService:
         result = self.repository.complete_review(state["review_run_id"], state["job_id"])
         self.repository.finish_node(node_run_id, result)
         return {"result": result}
+
+
+def _missing_evidence_sources(
+    contract_chunks: list[dict[str, Any]], policy_chunks: list[dict[str, Any]]
+) -> list[str]:
+    """按固定顺序返回缺失来源，作为条件边和可观测记录的稳定路由依据。"""
+
+    missing_sources = []
+    if not contract_chunks:
+        missing_sources.append("CONTRACT")
+    if not policy_chunks:
+        missing_sources.append("POLICY")
+    return missing_sources
+
+
+def _build_retry_query(
+    check_code: str,
+    check_item: dict[str, Any],
+    missing_sources: list[str],
+) -> str:
+    """使用固定同义词生成第二查询，并明确限制在缺失的证据来源内。"""
+
+    source_labels = {
+        "CONTRACT": "当前合同正文中的明确约定或相关条款",
+        "POLICY": "当前有效企业制度中的限制、最低要求或审批条件",
+    }
+    source_scope = "；".join(source_labels[source] for source in missing_sources)
+    return (
+        f"{check_item['name']}补充检索：{CHECK_RETRY_QUERIES[check_code]}；"
+        f"重点查找{source_scope}"
+    )
+
+
+def _format_missing_evidence_sources(missing_sources: list[str]) -> str:
+    """把内部来源代码转换为可安全展示的中文说明。"""
+
+    labels = {"CONTRACT": "合同相关条款", "POLICY": "制度依据"}
+    return "和".join(labels[source] for source in missing_sources)
 
 
 def _format_candidates(chunks: list[dict[str, Any]], prefix: str) -> str:

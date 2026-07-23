@@ -107,6 +107,18 @@ class LowScoreContractRerankProvider(FakeRerankProvider):
         return PolicyRerankResult(candidates[:final_top_k], candidates, 8)
 
 
+class RetryRecoversContractRerankProvider(LowScoreContractRerankProvider):
+    """首次合同证据低于门槛，固定补充查询可以召回可靠证据。"""
+
+    def rerank(self, query, hits, final_top_k, *, instruct=None):
+        is_contract = instruct is not None and "current contract" in instruct
+        if is_contract and "补充检索" in query:
+            return FakeRerankProvider.rerank(
+                self, query, hits, final_top_k, instruct=instruct
+            )
+        return super().rerank(query, hits, final_top_k, instruct=instruct)
+
+
 class PolicyThresholdRerankProvider(FakeRerankProvider):
     """制度 Top 5 中只有前两条达到 0.60，用于验证逐条阈值。"""
 
@@ -150,6 +162,8 @@ class FakeRepository:
         self.policy_top_k_values: list[int] = []
         self.retrieval_records: list[dict[str, Any]] = []
         self.saved_decisions: list[ModelRiskDecision] = []
+        self.node_names: dict[object, str] = {}
+        self.finished_nodes: list[dict[str, Any]] = []
 
     def mark_running(self, review_run_id, job_id):
         return None
@@ -179,9 +193,16 @@ class FakeRepository:
         }
 
     def create_node_run(self, workflow_run_id, node_name, sequence_no, input_data):
-        return uuid4()
+        node_run_id = uuid4()
+        with self.lock:
+            self.node_names[node_run_id] = node_name
+        return node_run_id
 
     def finish_node(self, node_run_id, output_data):
+        with self.lock:
+            self.finished_nodes.append(
+                {"node_name": self.node_names[node_run_id], "output_data": output_data}
+            )
         return None
 
     def update_progress(self, job_id, progress):
@@ -293,6 +314,103 @@ class RiskReviewServiceTests(unittest.TestCase):
         ]
         self.assertEqual(4, len(policy_records))
         self.assertTrue(all(len(record["args"][3]) == 10 for record in policy_records))
+        check_outputs = [
+            node["output_data"]
+            for node in repository.finished_nodes
+            if "route" in node["output_data"]
+        ]
+        self.assertEqual(4, len(check_outputs))
+        self.assertTrue(
+            all(
+                output["route"] == "MODEL_JUDGMENT"
+                and output["retrieval_attempts"] == 1
+                and output["retried_sources"] == []
+                for output in check_outputs
+            )
+        )
+
+    def test_insufficient_contract_evidence_retries_once_then_stops(self) -> None:
+        repository = FakeRepository()
+        service = RiskReviewService(
+            repository=repository,
+            embedding_provider=FakeEmbeddingProvider(),
+            model_provider=NeverCalledModelProvider(),
+            rerank_provider=LowScoreContractRerankProvider(),
+        )
+
+        service.run(uuid4(), uuid4())
+
+        contract_records = [
+            record
+            for record in repository.retrieval_records
+            if record["args"][2].get("chunk_type") == "CONTRACT_CLAUSE"
+        ]
+        policy_records = [
+            record
+            for record in repository.retrieval_records
+            if record["args"][2].get("chunk_type") == "POLICY_SECTION"
+        ]
+        self.assertEqual(8, len(contract_records))
+        self.assertEqual(4, len(policy_records))
+        self.assertEqual(
+            [1, 1, 1, 1, 2, 2, 2, 2],
+            sorted(record["args"][2]["attempt"] for record in contract_records),
+        )
+        self.assertTrue(
+            all(
+                record["args"][2]["query_kind"] == "SUPPLEMENTAL"
+                for record in contract_records
+                if record["args"][2]["attempt"] == 2
+            )
+        )
+        check_outputs = [
+            node["output_data"]
+            for node in repository.finished_nodes
+            if "route" in node["output_data"]
+        ]
+        self.assertTrue(
+            all(
+                output["route"] == "INSUFFICIENT_INFORMATION"
+                and output["retrieval_attempts"] == 2
+                and output["initial_missing_sources"] == ["CONTRACT"]
+                and output["retried_sources"] == ["CONTRACT"]
+                and output["final_missing_sources"] == ["CONTRACT"]
+                for output in check_outputs
+            )
+        )
+
+    def test_retry_recovers_missing_contract_evidence_then_calls_model(self) -> None:
+        repository = FakeRepository()
+        model_provider = FakeModelProvider()
+        service = RiskReviewService(
+            repository=repository,
+            embedding_provider=FakeEmbeddingProvider(),
+            model_provider=model_provider,
+            rerank_provider=RetryRecoversContractRerankProvider(),
+        )
+
+        service.run(uuid4(), uuid4())
+
+        self.assertEqual(8, len(repository.contract_top_k_values))
+        self.assertEqual(4, len(repository.policy_top_k_values))
+        self.assertTrue(
+            all(decision.status == "RISK" for decision in repository.saved_decisions)
+        )
+        check_outputs = [
+            node["output_data"]
+            for node in repository.finished_nodes
+            if "route" in node["output_data"]
+        ]
+        self.assertTrue(
+            all(
+                output["route"] == "MODEL_JUDGMENT"
+                and output["retrieval_attempts"] == 2
+                and output["initial_missing_sources"] == ["CONTRACT"]
+                and output["retried_sources"] == ["CONTRACT"]
+                and output["final_missing_sources"] == []
+                for output in check_outputs
+            )
+        )
 
     def test_contract_query_below_threshold_skips_chat_model(self) -> None:
         repository = FakeRepository()

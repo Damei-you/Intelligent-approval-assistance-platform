@@ -277,6 +277,8 @@ class ApprovalIntegrationTests(unittest.TestCase):
 
         self.assertEqual(1, len(payment.retrieval_candidates))
         self.assertEqual("CONTRACT", payment.retrieval_candidates[0].evidence_type)
+        self.assertEqual(1, payment.retrieval_candidates[0].retrieval_attempt)
+        self.assertEqual("INITIAL", payment.retrieval_candidates[0].query_kind)
         self.assertTrue(payment.retrieval_candidates[0].selected_as_evidence)
         self.assertEqual("验收后付款。", payment.retrieval_candidates[0].content)
 

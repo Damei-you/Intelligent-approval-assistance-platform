@@ -264,11 +264,12 @@ docker compose up -d postgres redis
 
 风险审查固定执行付款、质保、违约责任和争议解决四项检查。LangGraph 在加载合同上下文后并行扇出四个检查节点，等待四项全部结束后再执行汇总。每项检查完成以下步骤：
 
-1. 只在当前合同文档中向量召回 Top 20，再由 `qwen3-rerank` 重排序并取 Top 5。重排第一名低于 `0.45` 时，系统认为当前检查项缺少可靠合同证据并直接返回信息不足；`0.45～0.55` 记录为低置信度，但仍保留 Top 5 供模型判断。
+1. 只在当前合同文档中向量召回 Top 20，再由 `qwen3-rerank` 重排序并取 Top 5。重排第一名低于 `0.45` 时，系统认为当前检查项缺少可靠合同证据；`0.45～0.55` 记录为低置信度，但仍保留 Top 5 供模型判断。
 2. 在当前有效制度中向量召回 Top 10，再由 `qwen3-rerank` 重排序并取 Top 5；最终候选低于 `0.60` 时不进入模型上下文。
-3. 使用 `qwen-plus`（可通过 `REVIEW_MODEL` 修改）输出结构化结论。
-4. 校验模型返回的 `C1/P1` 引用标签，并从数据库回查引用原文。
-5. 保存风险项、证据、向量/重排记录、模型调用记录和节点执行记录。
+3. 首次检索后通过 LangGraph 条件边检查两侧证据。两侧均有效时进入模型判断；任一侧不足时，使用固定同义词查询，仅对缺失来源补检一次。补检后仍不足则生成 `INSUFFICIENT_INFORMATION`，不调用聊天模型，也不会继续循环。
+4. 证据充分时使用 `qwen-plus`（可通过 `REVIEW_MODEL` 修改）输出结构化结论。
+5. 校验模型返回的 `C1/P1` 引用标签，并从数据库回查引用原文。
+6. 保存风险项、证据、两轮向量/重排记录、条件路由摘要、模型调用记录和节点执行记录。
 
 合同和制度章节必须先完成向量化。聊天模型、向量模型和重排序模型共用 `api-key`
 环境变量。重排序调用百炼专用接口，可通过 `RERANK_MODEL`、`RERANK_URL`、
@@ -314,11 +315,14 @@ Content-Type: application/json
 
 每项 `finding` 的 `retrieval_candidates` 返回该 LangGraph 分支已经持久化的检索候选，
 字段包括来源类型、文档标题、条款编号、正文、向量排名/相似度、重排排名/分数、
-`selected_for_context`、`ranking_strategy` 和 `selected_as_evidence`。候选来自现有
+`retrieval_attempt`、`query_kind`、`selected_for_context`、`ranking_strategy` 和
+`selected_as_evidence`。`retrieval_attempt=1` 表示首次检索，`2` 表示唯一一次补检；同一
+条款可能在两轮中分别出现。候选来自现有
 `retrieval_runs`、`retrieval_hits` 和
 `document_chunks`，不需要新增数据表。`evidence` 仍只表示最终采纳证据，不能把所有候选
 等同于结论依据。合同检索记录还会在 `filters` 中保存查询级分数、置信区间和门槛；制度
-检索记录保存候选阈值和高置信度参考值，便于复核当次审查为什么接收或拒绝候选。
+检索记录保存候选阈值和高置信度参考值；两侧记录还会保存 `attempt` 和 `query_kind`，便于
+复核当次审查为什么接收候选、进入补检或结束为信息不足。
 
 ### 已有数据库迁移
 

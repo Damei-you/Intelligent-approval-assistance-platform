@@ -63,6 +63,9 @@ class RiskRetrievalCandidate(BaseModel):
     clause_no: str | None = None
     title: str | None = None
     content: str
+    # 同一条款可能在首次查询和补检查询中分别命中，轮次字段让前端可以稳定区分两条轨迹。
+    retrieval_attempt: int = Field(default=1, ge=1, le=2)
+    query_kind: Literal["INITIAL", "SUPPLEMENTAL"] = "INITIAL"
     rank_no: int = Field(ge=1)
     similarity_score: float
     rerank_rank_no: int | None = Field(default=None, ge=1)

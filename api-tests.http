@@ -139,6 +139,7 @@ Accept: application/json
 # contract_id 来自合同导入响应；合同和制度需先完成向量化。
 # 合同侧向量 Top 20、制度侧向量 Top 10，两侧经重排序后取 Top 5。
 # 合同第一名低于 0.45 时判定信息不足；制度最终候选按 0.60 阈值过滤。
+# 首次证据不足时只对缺失来源补检一次；补检仍不足时不调用聊天模型。
 POST http://127.0.0.1:8000/api/v1/risk-reviews
 Content-Type: application/json
 

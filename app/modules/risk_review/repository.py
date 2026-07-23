@@ -699,11 +699,15 @@ class RiskReviewRepository:
                     CASE WHEN d.document_type = 'CONTRACT'
                          THEN 'CONTRACT' ELSE 'POLICY' END AS evidence_type,
                     d.title AS document_title, dc.clause_no, dc.title, dc.content,
+                    COALESCE((retrieval.filters ->> 'attempt')::INTEGER, 1)
+                        AS retrieval_attempt,
+                    COALESCE(retrieval.filters ->> 'query_kind', 'INITIAL')
+                        AS query_kind,
                     hit.rank_no, hit.similarity_score,
                     hit.rerank_rank_no, hit.rerank_score,
                     hit.selected_for_context,
                     retrieval.ranking_strategy, retrieval.rerank_model,
-                    EXISTS (
+                    hit.selected_for_context AND EXISTS (
                         SELECT 1
                         FROM finding_evidence selected_evidence
                         JOIN risk_findings selected_finding
@@ -721,7 +725,7 @@ class RiskReviewRepository:
                 JOIN document_chunks dc ON dc.id = hit.chunk_id
                 JOIN documents d ON d.id = dc.document_id
                 WHERE workflow.review_run_id = %s
-                ORDER BY node.sequence_no, d.document_type,
+                ORDER BY node.sequence_no, retrieval_attempt, d.document_type,
                          COALESCE(hit.rerank_rank_no, hit.rank_no)
                 """,
                 (review_run_id, review_run_id),
