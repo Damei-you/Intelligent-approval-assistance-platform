@@ -158,3 +158,7 @@ npm run dev
 ```
 
 访问 `http://127.0.0.1:5173`。开发服务器会把 `/api` 和 `/health` 请求代理到 `http://127.0.0.1:8000`。
+
+## 生产部署
+
+Ubuntu 服务器可使用 `compose.prod.yaml` 同时运行 PostgreSQL、Redis、FastAPI、Celery Worker 和 Vue/Nginx。生产环境变量、启动、更新与日志检查方法见 [远程服务器部署说明](docs/server-deployment.md)。
