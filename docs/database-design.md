@@ -231,7 +231,8 @@ DRAFT -> PARSING -> READY -> REVIEWING -> PENDING_APPROVAL
 
 分别记录检索请求和命中结果。`retrieval_runs` 保存候选 Top K、最终 Top K、排名策略、
 重排模型、耗时与降级错误；`retrieval_hits` 同时保存向量排名/相似度、重排排名/分数，
-以及最终是否被送入模型上下文。合同侧只写向量排名，制度侧可以完整对比重排前后变化。
+以及最终是否被送入模型上下文。合同和制度两侧都可以完整对比重排前后变化；合同
+`filters` 还保存查询级分数和置信区间，制度 `filters` 保存候选过滤阈值。
 
 #### `llm_calls`
 
@@ -255,10 +256,18 @@ Redis/Celery 负责任务分发，`async_jobs` 保存可查询、可追踪的最
 flowchart TD
     A[创建 review_runs] --> B[创建 workflow_runs]
     B --> C[加载适用检查项]
-    C --> D[为检查项检索合同条款]
-    D --> E[向量召回制度 Top 10]
+    C --> D[合同向量召回 Top 20]
+    D --> DR[合同重排序取 Top 5]
+    DR --> DG{第一名不低于 0.45}
+    C --> E[制度向量召回 Top 10]
     E --> R[制度重排序取 Top 5]
-    R --> F[调用 LLM 生成结论]
+    R --> PF[过滤低于 0.60 的制度候选]
+    PF --> PG{存在制度候选}
+    DG --> X{合同与制度证据均有效}
+    PG --> X
+    X -- 是 --> F[调用 LLM 生成结论]
+    X -- 否 --> FI[生成信息不足结论]
+    FI --> G[写入 risk_findings]
     F --> G[写入 risk_findings]
     G --> H[写入 finding_evidence]
     H --> I{还有检查项}

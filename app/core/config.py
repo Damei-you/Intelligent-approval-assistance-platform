@@ -40,7 +40,7 @@ class Settings:
     model_timeout_seconds: float = float(os.getenv("MODEL_TIMEOUT_SECONDS", "60"))
     # 风险审查复用同一个百炼兼容接口和 api-key，只单独配置生成式模型名称。
     review_model: str = os.getenv("REVIEW_MODEL", "qwen-plus")
-    # 制度侧先扩大向量召回，再通过专用重排序模型筛选进入 LLM 上下文的候选。
+    # 合同和制度先扩大向量召回，再通过专用重排序模型筛选进入 LLM 上下文的候选。
     # 重排序接口不是 OpenAI 兼容接口，因此使用独立的服务地址。
     rerank_model: str = os.getenv("RERANK_MODEL", "qwen3-rerank")
     rerank_url: str = os.getenv(
@@ -48,8 +48,25 @@ class Settings:
         "https://dashscope.aliyuncs.com/compatible-api/v1/reranks",
     )
     rerank_timeout_seconds: float = float(os.getenv("RERANK_TIMEOUT_SECONDS", "20"))
+    # 合同侧使用较宽的 Top 20 保证长合同召回率，再重排取 Top 5。
+    # 第一名低于查询级门槛时，表示当前风险项没有可靠合同证据。
+    contract_recall_top_k: int = int(os.getenv("CONTRACT_RECALL_TOP_K", "20"))
+    contract_final_top_k: int = int(os.getenv("CONTRACT_FINAL_TOP_K", "5"))
+    contract_rerank_query_min_score: float = float(
+        os.getenv("CONTRACT_RERANK_QUERY_MIN_SCORE", "0.45")
+    )
+    contract_rerank_low_confidence_score: float = float(
+        os.getenv("CONTRACT_RERANK_LOW_CONFIDENCE_SCORE", "0.55")
+    )
     policy_recall_top_k: int = int(os.getenv("POLICY_RECALL_TOP_K", "10"))
     policy_final_top_k: int = int(os.getenv("POLICY_FINAL_TOP_K", "5"))
+    # 制度阈值逐条作用于重排后的 Top 5；高置信度值只用于追踪，不改变结论。
+    policy_rerank_min_score: float = float(
+        os.getenv("POLICY_RERANK_MIN_SCORE", "0.60")
+    )
+    rerank_high_confidence_score: float = float(
+        os.getenv("RERANK_HIGH_CONFIDENCE_SCORE", "0.70")
+    )
     cors_origins: tuple[str, ...] = tuple(
         origin.strip()
         for origin in os.getenv(

@@ -36,7 +36,9 @@ from app.modules.policy_import.service import PolicyImportService  # noqa: E402
 from app.modules.risk_review.repository import RiskReviewRepository  # noqa: E402
 from app.modules.risk_review.service import (  # noqa: E402
     CHECK_QUERIES,
+    CONTRACT_RERANK_INSTRUCT,
     DashScopeRerankProvider,
+    POLICY_RERANK_INSTRUCT,
     RiskReviewService,
 )
 from app.modules.vectorization.service import (  # noqa: E402
@@ -373,10 +375,14 @@ def evaluate_retrieval(
     resources: dict[str, Any],
     contract_top_k: int,
     policy_top_k: int,
+    contract_rerank: bool = False,
+    contract_final_top_k: int = 5,
+    contract_query_min_score: float = 0.45,
     policy_rerank: bool = False,
     policy_final_top_k: int = 5,
+    policy_min_score: float = 0.60,
 ) -> dict[str, Any]:
-    """调用真实检索；可选择仅对制度候选执行与审查链路相同的重排序。"""
+    """调用真实检索，并可按正式审查链路重排合同和制度候选。"""
 
     _require_vectorized(resources)
     provider = DashScopeEmbeddingProvider()
@@ -384,7 +390,9 @@ def evaluate_retrieval(
     started = time.perf_counter()
     vectors = provider.embed_documents(queries)
     repository = RiskReviewRepository()
-    rerank_provider = DashScopeRerankProvider() if policy_rerank else None
+    rerank_provider = (
+        DashScopeRerankProvider() if contract_rerank or policy_rerank else None
+    )
     judgement_by_type = {
         item["check_code"]: item for item in dataset.judgements["queries"]
     }
@@ -393,12 +401,40 @@ def evaluate_retrieval(
         contract_hits = repository.search_contract_chunks(
             resources["contract_document_id"], vector, top_k=contract_top_k
         )
+        contract_candidate_hits = contract_hits
+        if contract_rerank and rerank_provider is not None:
+            contract_result = rerank_provider.rerank(
+                CHECK_QUERIES[check_type],
+                contract_candidate_hits,
+                contract_final_top_k,
+                instruct=CONTRACT_RERANK_INSTRUCT,
+            )
+            contract_candidate_hits = contract_result.all_hits
+            contract_hits = contract_result.selected_hits
+            first_score = (
+                contract_hits[0].get("rerank_score") if contract_hits else None
+            )
+            if (
+                not isinstance(first_score, (int, float))
+                or first_score < contract_query_min_score
+            ):
+                contract_hits = []
         policy_hits = repository.search_policy_chunks(vector, top_k=policy_top_k)
         policy_candidate_hits = policy_hits
-        if rerank_provider is not None:
-            policy_hits = rerank_provider.rerank(
-                CHECK_QUERIES[check_type], policy_candidate_hits, policy_final_top_k
-            ).selected_hits
+        if policy_rerank and rerank_provider is not None:
+            policy_result = rerank_provider.rerank(
+                CHECK_QUERIES[check_type],
+                policy_candidate_hits,
+                policy_final_top_k,
+                instruct=POLICY_RERANK_INSTRUCT,
+            )
+            policy_candidate_hits = policy_result.all_hits
+            policy_hits = [
+                hit
+                for hit in policy_result.selected_hits
+                if isinstance(hit.get("rerank_score"), (int, float))
+                and hit["rerank_score"] >= policy_min_score
+            ]
         judgement = judgement_by_type[check_type]
         contract_grades = _grades_for_query(
             judgement, "contract_judgements", "clause_no"
@@ -412,15 +448,17 @@ def evaluate_retrieval(
         policy_ranked = [
             _ranked_id(hit, resources["policy_document_id"]) for hit in policy_hits
         ]
+        contract_metric_k = contract_final_top_k if contract_rerank else contract_top_k
         policy_metric_k = policy_final_top_k if policy_rerank else policy_top_k
         items.append(
             {
                 "check_type": check_type,
                 "query": CHECK_QUERIES[check_type],
                 "contract": {
-                    "k": contract_top_k,
+                    "candidate_k": contract_top_k,
+                    "k": contract_metric_k,
                     "metrics": ranking_metrics(
-                        contract_ranked, contract_grades, contract_top_k
+                        contract_ranked, contract_grades, contract_metric_k
                     ),
                     "hits": [
                         _serialize_hit(
@@ -428,6 +466,12 @@ def evaluate_retrieval(
                         )
                         for hit in contract_hits
                     ],
+                    "vector_candidates": [
+                        _serialize_hit(
+                            hit, contract_grades, resources["contract_document_id"]
+                        )
+                        for hit in contract_candidate_hits
+                    ] if contract_rerank else [],
                 },
                 "policy": {
                     "candidate_k": policy_top_k,
@@ -458,9 +502,19 @@ def evaluate_retrieval(
             for metric in ("recall_at_k", "precision_at_k", "mrr", "ndcg_at_k")
         }
     return {
-        "ranking": "policy_rerank" if policy_rerank else "vector_baseline",
+        "ranking": (
+            "contract_policy_rerank"
+            if contract_rerank and policy_rerank
+            else "contract_rerank"
+            if contract_rerank
+            else "policy_rerank"
+            if policy_rerank
+            else "vector_baseline"
+        ),
         "embedding_model": "text-embedding-v4",
-        "rerank_model": settings.rerank_model if policy_rerank else None,
+        "rerank_model": (
+            settings.rerank_model if contract_rerank or policy_rerank else None
+        ),
         "duration_ms": round((time.perf_counter() - started) * 1000, 2),
         "aggregate": aggregate,
         "checks": items,
@@ -728,9 +782,15 @@ def render_markdown(report: dict[str, Any]) -> str:
 
     retrieval = report.get("retrieval")
     if retrieval:
+        ranking_label = {
+            "vector_baseline": "向量检索基线",
+            "contract_rerank": "合同重排序检索",
+            "policy_rerank": "制度重排序检索",
+            "contract_policy_rerank": "合同与制度重排序检索",
+        }.get(retrieval.get("ranking"), "检索评测")
         lines.extend(
             [
-                "## 向量检索基线",
+                f"## {ranking_label}",
                 "",
                 "| 数据源 | Recall@K | Precision@K | MRR | NDCG@K |",
                 "| --- | ---: | ---: | ---: | ---: |",
@@ -833,13 +893,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="确认允许测试数据调用百炼 Embedding/大模型 API",
     )
     parser.add_argument("--contract-top-k", type=int, default=20)
+    parser.add_argument(
+        "--contract-rerank",
+        action="store_true",
+        help="对合同候选执行与正式审查相同的重排序和查询级门槛",
+    )
+    parser.add_argument(
+        "--contract-final-top-k", type=int, default=settings.contract_final_top_k
+    )
+    parser.add_argument(
+        "--contract-query-min-score",
+        type=float,
+        default=settings.contract_rerank_query_min_score,
+    )
     parser.add_argument("--policy-top-k", type=int, default=30)
     parser.add_argument(
         "--policy-rerank",
         action="store_true",
-        help="对制度候选调用项目当前配置的重排序模型，合同侧保持向量检索",
+        help="对制度候选调用项目当前配置的重排序模型和候选阈值",
     )
     parser.add_argument("--policy-final-top-k", type=int, default=5)
+    parser.add_argument(
+        "--policy-min-score", type=float, default=settings.policy_rerank_min_score
+    )
     parser.add_argument("--timeout", type=int, default=600, help="异步任务等待秒数")
     parser.add_argument(
         "--output-dir", type=Path, default=PROJECT_ROOT / "output" / "evaluation"
@@ -857,12 +933,15 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if (
         args.contract_top_k <= 0
+        or args.contract_final_top_k <= 0
         or args.policy_top_k <= 0
         or args.policy_final_top_k <= 0
     ):
         raise ValueError("top-k 必须大于 0")
     if args.policy_final_top_k > args.policy_top_k:
         raise ValueError("--policy-final-top-k 不能大于 --policy-top-k")
+    if args.contract_final_top_k > args.contract_top_k:
+        raise ValueError("--contract-final-top-k 不能大于 --contract-top-k")
     needs_external_calls = args.prepare or args.mode in {"retrieval", "all"} or args.start_review
     if args.start_review and args.mode not in {"e2e", "all"}:
         raise ValueError("--start-review 只能和 --mode e2e 或 all 一起使用")
@@ -899,8 +978,12 @@ def main(argv: list[str] | None = None) -> int:
             resources,
             args.contract_top_k,
             args.policy_top_k,
+            args.contract_rerank,
+            args.contract_final_top_k,
+            args.contract_query_min_score,
             args.policy_rerank,
             args.policy_final_top_k,
+            args.policy_min_score,
         )
     if validation["passed"] and args.mode in {"e2e", "all"}:
         assert resources is not None

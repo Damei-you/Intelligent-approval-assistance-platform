@@ -62,13 +62,14 @@ class FakeModelProvider:
 class FakeRerankProvider:
     """用倒序模拟重排序，证明模型收到的不是原向量前五。"""
 
-    def rerank(self, query, hits, final_top_k):
+    def rerank(self, query, hits, final_top_k, *, instruct=None):
+        is_contract = instruct is not None and "current contract" in instruct
         candidates = [
             {
                 **hit,
                 "vector_rank_no": index,
                 "rerank_rank_no": len(hits) - index + 1,
-                "rerank_score": index / 10,
+                "rerank_score": 0.9 if is_contract else index / 10,
                 "selected_for_context": index > len(hits) - final_top_k,
             }
             for index, hit in enumerate(hits, 1)
@@ -81,8 +82,58 @@ class FakeRerankProvider:
 
 
 class FailingRerankProvider:
-    def rerank(self, query, hits, final_top_k):
+    def rerank(self, query, hits, final_top_k, *, instruct=None):
         raise RuntimeError("模拟重排序服务不可用")
+
+
+class LowScoreContractRerankProvider(FakeRerankProvider):
+    """合同第一名低于查询级门槛，制度侧仍返回正常候选。"""
+
+    def rerank(self, query, hits, final_top_k, *, instruct=None):
+        if instruct is None or "current contract" not in instruct:
+            return super().rerank(
+                query, hits, final_top_k, instruct=instruct
+            )
+        candidates = [
+            {
+                **hit,
+                "vector_rank_no": index,
+                "rerank_rank_no": index,
+                "rerank_score": 0.44,
+                "selected_for_context": index <= final_top_k,
+            }
+            for index, hit in enumerate(hits, 1)
+        ]
+        return PolicyRerankResult(candidates[:final_top_k], candidates, 8)
+
+
+class PolicyThresholdRerankProvider(FakeRerankProvider):
+    """制度 Top 5 中只有前两条达到 0.60，用于验证逐条阈值。"""
+
+    def rerank(self, query, hits, final_top_k, *, instruct=None):
+        if instruct is not None and "current contract" in instruct:
+            return super().rerank(
+                query, hits, final_top_k, instruct=instruct
+            )
+        scores = [0.9, 0.7, 0.59, 0.4, 0.2]
+        candidates = [
+            {
+                **hit,
+                "vector_rank_no": index,
+                "rerank_rank_no": index,
+                "rerank_score": scores[index - 1] if index <= len(scores) else 0.1,
+                "selected_for_context": index <= final_top_k,
+            }
+            for index, hit in enumerate(hits, 1)
+        ]
+        return PolicyRerankResult(candidates[:final_top_k], candidates, 9)
+
+
+class NeverCalledModelProvider:
+    """查询级门槛拒绝合同时，聊天模型不应被调用。"""
+
+    def judge(self, check_item, contract_chunks, policy_chunks):
+        raise AssertionError("合同证据低于门槛时不应调用聊天模型")
 
 
 class FakeRepository:
@@ -95,8 +146,10 @@ class FakeRepository:
         self.saved_codes: list[str] = []
         self.check_codes: dict[object, str] = {}
         self.lock = Lock()
+        self.contract_top_k_values: list[int] = []
         self.policy_top_k_values: list[int] = []
         self.retrieval_records: list[dict[str, Any]] = []
+        self.saved_decisions: list[ModelRiskDecision] = []
 
     def mark_running(self, review_run_id, job_id):
         return None
@@ -138,6 +191,8 @@ class FakeRepository:
         return None
 
     def search_contract_chunks(self, document_id, query_vector, top_k=3):
+        with self.lock:
+            self.contract_top_k_values.append(top_k)
         return [self._chunk("合同条款")]
 
     def search_policy_chunks(self, query_vector, top_k=5):
@@ -155,6 +210,7 @@ class FakeRepository:
     def save_finding(self, review_run_id, check_item_id, decision, contract_evidence, policy_evidence):
         with self.lock:
             self.saved_codes.append(self.check_codes[check_item_id])
+            self.saved_decisions.append(decision)
         return uuid4()
 
     def complete_review(self, review_run_id, job_id):
@@ -182,6 +238,7 @@ class RiskReviewServiceTests(unittest.TestCase):
             self.assertEqual("qwen3-rerank", payload["model"])
             self.assertEqual("查询", payload["query"])
             self.assertEqual(2, payload["top_n"])
+            self.assertIn("enterprise policy clauses", payload["instruct"])
             self.assertEqual("Bearer test-key", request.headers["Authorization"])
             return httpx.Response(
                 200,
@@ -218,17 +275,80 @@ class RiskReviewServiceTests(unittest.TestCase):
         self.assertCountEqual(REVIEW_CHECK_CODES, repository.saved_codes)
         self.assertEqual(4, model_provider.max_active_calls)
         self.assertEqual("HIGH", result["overall_risk_level"])
+        self.assertEqual([20, 20, 20, 20], sorted(repository.contract_top_k_values))
         self.assertEqual([10, 10, 10, 10], sorted(repository.policy_top_k_values))
         self.assertTrue(
             all(contents[0] == "制度候选10" for contents in model_provider.policy_contents)
         )
-        policy_records = [
+        rerank_records = [
             record
             for record in repository.retrieval_records
             if record["kwargs"].get("ranking_strategy") == "RERANK"
         ]
+        self.assertEqual(8, len(rerank_records))
+        policy_records = [
+            record
+            for record in rerank_records
+            if record["args"][2].get("chunk_type") == "POLICY_SECTION"
+        ]
         self.assertEqual(4, len(policy_records))
         self.assertTrue(all(len(record["args"][3]) == 10 for record in policy_records))
+
+    def test_contract_query_below_threshold_skips_chat_model(self) -> None:
+        repository = FakeRepository()
+        service = RiskReviewService(
+            repository=repository,
+            embedding_provider=FakeEmbeddingProvider(),
+            model_provider=NeverCalledModelProvider(),
+            rerank_provider=LowScoreContractRerankProvider(),
+        )
+
+        service.run(uuid4(), uuid4())
+
+        self.assertEqual(4, len(repository.saved_decisions))
+        self.assertTrue(
+            all(
+                decision.status == "INSUFFICIENT_INFORMATION"
+                for decision in repository.saved_decisions
+            )
+        )
+        contract_records = [
+            record
+            for record in repository.retrieval_records
+            if record["args"][2].get("chunk_type") == "CONTRACT_CLAUSE"
+        ]
+        self.assertTrue(
+            all(
+                record["args"][2]["confidence_band"] == "REJECTED"
+                for record in contract_records
+            )
+        )
+        self.assertTrue(
+            all(
+                not candidate["selected_for_context"]
+                for record in contract_records
+                for candidate in record["args"][3]
+            )
+        )
+
+    def test_policy_threshold_only_keeps_candidates_at_or_above_minimum(self) -> None:
+        repository = FakeRepository()
+        model_provider = FakeModelProvider()
+        service = RiskReviewService(
+            repository=repository,
+            embedding_provider=FakeEmbeddingProvider(),
+            model_provider=model_provider,
+            rerank_provider=PolicyThresholdRerankProvider(),
+        )
+
+        service.run(uuid4(), uuid4())
+
+        self.assertTrue(
+            all(
+                contents == ["制度候选1", "制度候选2"]
+                for contents in model_provider.policy_contents
+            )
+        )
 
     def test_rerank_failure_falls_back_to_vector_top_five(self) -> None:
         repository = FakeRepository()
@@ -254,7 +374,7 @@ class RiskReviewServiceTests(unittest.TestCase):
             for record in repository.retrieval_records
             if record["kwargs"].get("ranking_strategy") == "RERANK_FALLBACK"
         ]
-        self.assertEqual(4, len(fallback_records))
+        self.assertEqual(8, len(fallback_records))
         self.assertTrue(
             all("模拟重排序服务不可用" in record["kwargs"]["rerank_error"] for record in fallback_records)
         )

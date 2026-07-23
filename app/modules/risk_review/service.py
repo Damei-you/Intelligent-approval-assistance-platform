@@ -26,6 +26,13 @@ CHECK_QUERIES = {
     "DISPUTE_RESOLUTION": "合同适用法律、管辖法院、仲裁约定，以及制度中的争议解决和管辖要求",
 }
 
+CONTRACT_RERANK_INSTRUCT = (
+    "Given a contract risk query, retrieve relevant clauses from the current contract."
+)
+POLICY_RERANK_INSTRUCT = (
+    "Given a contract risk query, retrieve relevant enterprise policy clauses."
+)
+
 
 class ReviewState(TypedDict, total=False):
     """LangGraph 节点间传递的小型状态，只保存标识和结果摘要。"""
@@ -99,7 +106,7 @@ class ReviewModelProvider:
 
 @dataclass(slots=True)
 class PolicyRerankResult:
-    """保存制度候选的重排结果，以及用于技术追踪的耗时。"""
+    """保存合同或制度候选的重排结果，以及用于技术追踪的耗时。"""
 
     selected_hits: list[dict[str, Any]]
     all_hits: list[dict[str, Any]]
@@ -107,7 +114,7 @@ class PolicyRerankResult:
 
 
 class DashScopeRerankProvider:
-    """调用百炼专用文本重排序接口，只处理制度候选。"""
+    """调用百炼专用文本重排序接口，处理合同或制度候选。"""
 
     def __init__(
         self,
@@ -118,7 +125,7 @@ class DashScopeRerankProvider:
         if not self.api_key:
             raise RiskReviewError(
                 "RERANK_MODEL_NOT_CONFIGURED",
-                "未配置 api-key 环境变量，无法执行制度重排序。",
+                "未配置 api-key 环境变量，无法执行条款重排序。",
             )
         # httpx.Client 会复用 HTTPS 连接；同一个 Celery 任务的四个 LangGraph 分支可并发使用。
         self.client = client or httpx.Client(timeout=settings.rerank_timeout_seconds)
@@ -128,6 +135,8 @@ class DashScopeRerankProvider:
         query: str,
         hits: list[dict[str, Any]],
         final_top_k: int,
+        *,
+        instruct: str = POLICY_RERANK_INSTRUCT,
     ) -> PolicyRerankResult:
         """对向量召回结果重新评分，返回按重排顺序筛出的上下文候选。"""
 
@@ -142,7 +151,7 @@ class DashScopeRerankProvider:
             "query": query,
             "documents": documents,
             "top_n": len(documents),
-            "instruct": "Given a contract risk query, retrieve relevant enterprise policy clauses.",
+            "instruct": instruct,
         }
         response = self.client.post(
             settings.rerank_url,
@@ -310,56 +319,115 @@ class RiskReviewService:
             {"check_code": code, "query": query},
         )
         query_vector = self.embedding_provider.embed_documents([query])[0]
-        contract_chunks = self.repository.search_contract_chunks(
-            context["contract_document_id"], query_vector, 3
+        contract_candidates = self.repository.search_contract_chunks(
+            context["contract_document_id"],
+            query_vector,
+            settings.contract_recall_top_k,
         )
+        contract_rerank_strategy = "RERANK"
+        contract_rerank_error = None
+        contract_rerank_latency_ms = None
+        contract_query_score = None
+        contract_confidence = "REJECTED"
+        try:
+            contract_rerank_result = self.rerank_provider.rerank(
+                query,
+                contract_candidates,
+                settings.contract_final_top_k,
+                instruct=CONTRACT_RERANK_INSTRUCT,
+            )
+            contract_candidates = contract_rerank_result.all_hits
+            contract_rerank_latency_ms = contract_rerank_result.latency_ms
+            contract_query_score = _first_rerank_score(
+                contract_rerank_result.selected_hits
+            )
+            if (
+                contract_query_score is not None
+                and contract_query_score >= settings.contract_rerank_query_min_score
+            ):
+                contract_chunks = contract_rerank_result.selected_hits
+                contract_confidence = (
+                    "LOW"
+                    if contract_query_score
+                    < settings.contract_rerank_low_confidence_score
+                    else "NORMAL"
+                )
+            else:
+                # 合同阈值是查询级门槛：第一名不可信时整组候选均不能进入模型上下文。
+                contract_chunks = []
+                _mark_selected_candidates(contract_candidates, [])
+        except Exception as exc:
+            # Rerank 不可用时保留原有向量检索能力，不让质量增强步骤中断整项审查。
+            contract_rerank_strategy = "RERANK_FALLBACK"
+            contract_rerank_error = _safe_error_message(exc)
+            contract_candidates, contract_chunks = _build_vector_fallback(
+                contract_candidates, settings.contract_final_top_k
+            )
+            contract_confidence = "FALLBACK"
+
         policy_candidates = self.repository.search_policy_chunks(
             query_vector, settings.policy_recall_top_k
         )
-        rerank_strategy = "RERANK"
-        rerank_error = None
-        rerank_latency_ms = None
+        policy_rerank_strategy = "RERANK"
+        policy_rerank_error = None
+        policy_rerank_latency_ms = None
         try:
-            rerank_result = self.rerank_provider.rerank(
-                query, policy_candidates, settings.policy_final_top_k
+            policy_rerank_result = self.rerank_provider.rerank(
+                query,
+                policy_candidates,
+                settings.policy_final_top_k,
+                instruct=POLICY_RERANK_INSTRUCT,
             )
-            policy_chunks = rerank_result.selected_hits
-            policy_candidates = rerank_result.all_hits
-            rerank_latency_ms = rerank_result.latency_ms
+            policy_candidates = policy_rerank_result.all_hits
+            policy_chunks = _filter_selected_candidates(
+                policy_rerank_result.selected_hits,
+                policy_candidates,
+                settings.policy_rerank_min_score,
+            )
+            policy_rerank_latency_ms = policy_rerank_result.latency_ms
         except Exception as exc:
             # 重排序是质量增强步骤，不应让整项风险审查失败；失败时使用向量排名前 5 条降级。
-            rerank_strategy = "RERANK_FALLBACK"
-            rerank_error = _safe_error_message(exc)
-            policy_candidates = [
-                {
-                    **hit,
-                    "vector_rank_no": index,
-                    "rerank_rank_no": None,
-                    "rerank_score": None,
-                    "selected_for_context": index <= settings.policy_final_top_k,
-                }
-                for index, hit in enumerate(policy_candidates, 1)
-            ]
-            policy_chunks = policy_candidates[: settings.policy_final_top_k]
+            policy_rerank_strategy = "RERANK_FALLBACK"
+            policy_rerank_error = _safe_error_message(exc)
+            policy_candidates, policy_chunks = _build_vector_fallback(
+                policy_candidates, settings.policy_final_top_k
+            )
         self.repository.record_retrieval(
             node_run_id,
             query,
-            {"document_id": str(context["contract_document_id"]), "chunk_type": "CONTRACT_CLAUSE"},
-            contract_chunks,
+            {
+                "document_id": str(context["contract_document_id"]),
+                "chunk_type": "CONTRACT_CLAUSE",
+                "query_min_score": settings.contract_rerank_query_min_score,
+                "low_confidence_score": settings.contract_rerank_low_confidence_score,
+                "query_score": contract_query_score,
+                "confidence_band": contract_confidence,
+            },
+            contract_candidates,
             settings.embedding_model,
-            final_top_k=3,
+            final_top_k=settings.contract_final_top_k,
+            ranking_strategy=contract_rerank_strategy,
+            rerank_model=settings.rerank_model,
+            rerank_latency_ms=contract_rerank_latency_ms,
+            rerank_error=contract_rerank_error,
         )
         self.repository.record_retrieval(
             node_run_id,
             query,
-            {"document_type": "POLICY", "is_current": True, "chunk_type": "POLICY_SECTION"},
+            {
+                "document_type": "POLICY",
+                "is_current": True,
+                "chunk_type": "POLICY_SECTION",
+                "candidate_min_score": settings.policy_rerank_min_score,
+                "high_confidence_score": settings.rerank_high_confidence_score,
+            },
             policy_candidates,
             settings.embedding_model,
             final_top_k=settings.policy_final_top_k,
-            ranking_strategy=rerank_strategy,
+            ranking_strategy=policy_rerank_strategy,
             rerank_model=settings.rerank_model,
-            rerank_latency_ms=rerank_latency_ms,
-            rerank_error=rerank_error,
+            rerank_latency_ms=policy_rerank_latency_ms,
+            rerank_error=policy_rerank_error,
         )
 
         if not contract_chunks or not policy_chunks:
@@ -458,7 +526,7 @@ def _format_candidates(chunks: list[dict[str, Any]], prefix: str) -> str:
 
 
 def _build_rerank_document(chunk: dict[str, Any]) -> str:
-    """把制度来源与条款正文组合为重排序模型可理解的单段文本。"""
+    """把文档来源与条款正文组合为重排序模型可理解的单段文本。"""
 
     heading = " ".join(
         str(value)
@@ -470,6 +538,60 @@ def _build_rerank_document(chunk: dict[str, Any]) -> str:
         if value
     )
     return f"{heading}\n{chunk['content']}" if heading else str(chunk["content"])
+
+
+def _first_rerank_score(hits: list[dict[str, Any]]) -> float | None:
+    """读取重排第一名分数；服务未评分时返回 None，避免把未知结果当成低分。"""
+
+    if not hits:
+        return None
+    score = hits[0].get("rerank_score")
+    return float(score) if isinstance(score, (int, float)) else None
+
+
+def _mark_selected_candidates(
+    candidates: list[dict[str, Any]], selected: list[dict[str, Any]]
+) -> None:
+    """同步上下文入选标记，使检索追踪与真正传给模型的候选保持一致。"""
+
+    selected_ids = {candidate["id"] for candidate in selected}
+    for candidate in candidates:
+        candidate["selected_for_context"] = candidate["id"] in selected_ids
+
+
+def _filter_selected_candidates(
+    selected: list[dict[str, Any]],
+    candidates: list[dict[str, Any]],
+    min_score: float,
+) -> list[dict[str, Any]]:
+    """按 Rerank 阈值过滤最终候选，但仍保留全部召回轨迹用于审计。"""
+
+    filtered = [
+        candidate
+        for candidate in selected
+        if isinstance(candidate.get("rerank_score"), (int, float))
+        and candidate["rerank_score"] >= min_score
+    ]
+    _mark_selected_candidates(candidates, filtered)
+    return filtered
+
+
+def _build_vector_fallback(
+    hits: list[dict[str, Any]], final_top_k: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Rerank 失败时恢复向量顺序，并明确标记真正进入上下文的前 K 条。"""
+
+    candidates = [
+        {
+            **hit,
+            "vector_rank_no": index,
+            "rerank_rank_no": None,
+            "rerank_score": None,
+            "selected_for_context": index <= final_top_k,
+        }
+        for index, hit in enumerate(hits, 1)
+    ]
+    return candidates, candidates[:final_top_k]
 
 
 def _select_references(

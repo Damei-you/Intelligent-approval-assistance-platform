@@ -264,16 +264,19 @@ docker compose up -d postgres redis
 
 风险审查固定执行付款、质保、违约责任和争议解决四项检查。LangGraph 在加载合同上下文后并行扇出四个检查节点，等待四项全部结束后再执行汇总。每项检查完成以下步骤：
 
-1. 只在当前合同文档中向量检索最多 3 条合同证据，合同侧暂不重排序。
-2. 在当前有效制度中向量召回 Top 10，再由 `qwen3-rerank` 重排序并取 Top 5。
+1. 只在当前合同文档中向量召回 Top 20，再由 `qwen3-rerank` 重排序并取 Top 5。重排第一名低于 `0.45` 时，系统认为当前检查项缺少可靠合同证据并直接返回信息不足；`0.45～0.55` 记录为低置信度，但仍保留 Top 5 供模型判断。
+2. 在当前有效制度中向量召回 Top 10，再由 `qwen3-rerank` 重排序并取 Top 5；最终候选低于 `0.60` 时不进入模型上下文。
 3. 使用 `qwen-plus`（可通过 `REVIEW_MODEL` 修改）输出结构化结论。
 4. 校验模型返回的 `C1/P1` 引用标签，并从数据库回查引用原文。
 5. 保存风险项、证据、向量/重排记录、模型调用记录和节点执行记录。
 
 合同和制度章节必须先完成向量化。聊天模型、向量模型和重排序模型共用 `api-key`
 环境变量。重排序调用百炼专用接口，可通过 `RERANK_MODEL`、`RERANK_URL`、
-`POLICY_RECALL_TOP_K` 和 `POLICY_FINAL_TOP_K` 配置。重排序失败时审查不会失败，制度侧会
-降级为向量前 5，并在检索运行记录中保存错误摘要。
+`CONTRACT_RECALL_TOP_K`、`CONTRACT_FINAL_TOP_K`、`CONTRACT_RERANK_QUERY_MIN_SCORE`、
+`CONTRACT_RERANK_LOW_CONFIDENCE_SCORE`、`POLICY_RECALL_TOP_K`、`POLICY_FINAL_TOP_K`、
+`POLICY_RERANK_MIN_SCORE` 和 `RERANK_HIGH_CONFIDENCE_SCORE` 配置。任一来源重排序失败时审查
+不会失败，对应来源会降级为向量前 5，并在检索运行记录中保存错误摘要。阈值只作用于
+Rerank 成功的结果，不能直接套用到向量降级分数。
 
 默认使用百炼当前推荐的 `qwen3-rerank` 兼容接口；`gte-rerank-v2` 已停止服务，不应再作为
 新项目默认模型。接口格式以[百炼 Text Rerank API](https://help.aliyun.com/en/model-studio/text-rerank-api)
@@ -314,7 +317,8 @@ Content-Type: application/json
 `selected_for_context`、`ranking_strategy` 和 `selected_as_evidence`。候选来自现有
 `retrieval_runs`、`retrieval_hits` 和
 `document_chunks`，不需要新增数据表。`evidence` 仍只表示最终采纳证据，不能把所有候选
-等同于结论依据。
+等同于结论依据。合同检索记录还会在 `filters` 中保存查询级分数、置信区间和门槛；制度
+检索记录保存候选阈值和高置信度参考值，便于复核当次审查为什么接收或拒绝候选。
 
 ### 已有数据库迁移
 
