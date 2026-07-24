@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
 from app.core.database import open_connection
 from app.modules.contract_import.exceptions import (
     ContractTypeNotFoundError,
+    CurrentContractRevisionChangedError,
     ImportRecordNotFoundError,
+    RevisionIdempotencyConflictError,
 )
 from app.modules.contract_import.schemas import ParsedContract
 
@@ -15,7 +18,13 @@ from app.modules.contract_import.schemas import ParsedContract
 class ContractImportRepository:
     """使用 psycopg 执行合同导入所需的参数化 SQL。"""
 
-    def save_import(self, contract: ParsedContract) -> dict[str, Any]:
+    def save_import(
+        self,
+        contract: ParsedContract,
+        *,
+        expected_current_document_id: UUID | None = None,
+        idempotency_key: UUID | None = None,
+    ) -> dict[str, Any]:
         """在一个事务中保存合同、文档和全部条款。"""
 
         with open_connection() as connection:
@@ -45,6 +54,10 @@ class ContractImportRepository:
                 ).fetchone()
 
                 if contract_row is None:
+                    if expected_current_document_id is not None:
+                        raise CurrentContractRevisionChangedError(
+                            "合同当前版本已经变化，请重新生成修订草案。"
+                        )
                     contract_row = connection.execute(
                         """
                         INSERT INTO contracts (
@@ -64,6 +77,60 @@ class ContractImportRepository:
                         ),
                     ).fetchone()
                 else:
+                    if idempotency_key is not None:
+                        existing_revision = connection.execute(
+                            """
+                            SELECT
+                                d.id AS document_id,
+                                d.revision_no,
+                                d.file_hash,
+                                COUNT(dc.id)::INTEGER AS clause_count
+                            FROM documents d
+                            LEFT JOIN document_chunks dc ON dc.document_id = d.id
+                            WHERE d.contract_id = %s
+                              AND d.document_type = 'CONTRACT'
+                              AND d.metadata ->> 'revision_client_request_id' = %s
+                            GROUP BY d.id
+                            """,
+                            (contract_row["id"], str(idempotency_key)),
+                        ).fetchone()
+                        if existing_revision is not None:
+                            if existing_revision["file_hash"] != contract.file_hash:
+                                raise RevisionIdempotencyConflictError(
+                                    "同一确认请求不能提交不同的合同修订内容。"
+                                )
+                            return {
+                                "contract_id": contract_row["id"],
+                                "document_id": existing_revision["document_id"],
+                                "contract_no": contract.contract_no,
+                                "revision_no": existing_revision["revision_no"],
+                                "import_format": contract.import_format,
+                                "parse_status": "PARSED",
+                                "clause_count": existing_revision["clause_count"],
+                                "vectorized": False,
+                                "idempotent_replay": True,
+                            }
+
+                    if expected_current_document_id is not None:
+                        current_document = connection.execute(
+                            """
+                            SELECT id
+                            FROM documents
+                            WHERE contract_id = %s
+                              AND document_type = 'CONTRACT'
+                              AND is_current = TRUE
+                            FOR UPDATE
+                            """,
+                            (contract_row["id"],),
+                        ).fetchone()
+                        if (
+                            current_document is None
+                            or current_document["id"] != expected_current_document_id
+                        ):
+                            raise CurrentContractRevisionChangedError(
+                                "合同当前版本已经变化，请重新生成修订草案。"
+                            )
+
                     connection.execute(
                         """
                         UPDATE contracts

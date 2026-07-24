@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 ReviewStatus = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
@@ -187,6 +187,117 @@ class RiskReviewTrace(BaseModel):
     total_latency_ms: int | None = Field(default=None, ge=0)
     error_message: str | None = None
     nodes: list[RiskTraceNode] = Field(default_factory=list)
+
+
+RevisionAction = Literal["REPLACE", "ADD"]
+
+
+class ModelContractRevisionChange(BaseModel):
+    """模型只选择后端提供的检查项编码和合同条款标签。"""
+
+    check_code: str = Field(min_length=1)
+    action: RevisionAction
+    target_clause_ref: str | None = None
+    proposed_clause_no: str | None = Field(default=None, max_length=64)
+    proposed_title: str | None = Field(default=None, max_length=255)
+    proposed_content: str = Field(min_length=1)
+    change_summary: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ModelContractRevisionPlan(BaseModel):
+    """模型生成的整合同整改计划，后端仍会逐项校验引用和风险归属。"""
+
+    summary: str = Field(min_length=1)
+    changes: list[ModelContractRevisionChange] = Field(min_length=1, max_length=8)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ContractRevisionDraftChange(BaseModel):
+    change_id: UUID
+    finding_id: UUID
+    check_code: str
+    check_name: str
+    finding_title: str
+    action: RevisionAction
+    target_clause_id: UUID | None = None
+    target_clause_no: str | None = None
+    target_clause_title: str | None = None
+    original_content: str | None = None
+    proposed_clause_no: str | None = Field(default=None, max_length=64)
+    proposed_title: str | None = Field(default=None, max_length=255)
+    proposed_content: str = Field(min_length=1)
+    change_summary: str
+    rationale: str
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ContractRevisionDraftResponse(BaseModel):
+    draft_id: UUID
+    review_run_id: UUID
+    contract_id: UUID
+    contract_no: str
+    contract_name: str
+    source_document_id: UUID
+    source_revision_no: int = Field(ge=1)
+    target_revision_no: int = Field(ge=2)
+    model_name: str
+    summary: str
+    changes: list[ContractRevisionDraftChange] = Field(min_length=1)
+    warnings: list[str] = Field(default_factory=list)
+    generated_at: datetime
+
+
+class ContractRevisionApplyChange(BaseModel):
+    """用户确认采用的一项修改；未出现在请求中的草案项不会写入新版本。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    finding_id: UUID
+    action: RevisionAction
+    target_clause_id: UUID | None = None
+    proposed_clause_no: str | None = Field(default=None, max_length=64)
+    proposed_title: str | None = Field(default=None, max_length=255)
+    proposed_content: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_target_clause(self) -> "ContractRevisionApplyChange":
+        # 替换操作必须指向来源文档中的真实条款；新增操作可指定插入位置或追加到末尾。
+        if self.action == "REPLACE" and self.target_clause_id is None:
+            raise ValueError("替换条款必须提供 target_clause_id。")
+        return self
+
+
+class ContractRevisionCreateRequest(BaseModel):
+    """人工确认后的合同修订请求，client_request_id 用于避免重复创建版本。"""
+
+    source_document_id: UUID
+    client_request_id: UUID
+    changes: list[ContractRevisionApplyChange] = Field(min_length=1, max_length=8)
+
+
+class ContractRevisionCreateResponse(BaseModel):
+    review_run_id: UUID
+    contract_id: UUID
+    document_id: UUID
+    contract_no: str
+    source_document_id: UUID
+    source_revision_no: int = Field(ge=1)
+    revision_no: int = Field(ge=2)
+    clause_count: int = Field(ge=1)
+    vectorization_job_id: UUID | None = None
+    vectorization_status: Literal[
+        "NOT_CONFIGURED",
+        "NOT_STARTED",
+        "QUEUED",
+        "RUNNING",
+        "RETRYING",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELLED",
+    ]
+    message: str
 
 
 class ModelRiskDecision(BaseModel):

@@ -9,6 +9,9 @@ from starlette.concurrency import run_in_threadpool
 from app.modules.risk_review.exceptions import RiskReviewError
 from app.modules.risk_review.repository import RiskReviewRepository
 from app.modules.risk_review.schemas import (
+    ContractRevisionCreateRequest,
+    ContractRevisionCreateResponse,
+    ContractRevisionDraftResponse,
     ErrorResponse,
     ReviewContractOption,
     RiskReviewCreateRequest,
@@ -16,12 +19,14 @@ from app.modules.risk_review.schemas import (
     RiskReviewDetail,
     RiskReviewTrace,
 )
+from app.modules.risk_review.revision_service import ContractRevisionService
 from app.modules.risk_review.service import RiskReviewService
 
 
 router = APIRouter(prefix="/api/v1/risk-reviews", tags=["风险审查"])
 repository = RiskReviewRepository()
 service = RiskReviewService(repository=repository)
+revision_service = ContractRevisionService(repository=repository)
 
 
 @router.get(
@@ -77,6 +82,55 @@ async def get_risk_review_trace(review_run_id: UUID) -> RiskReviewTrace:
 
     try:
         return await run_in_threadpool(repository.get_review_trace, review_run_id)
+    except RiskReviewError as exc:
+        return _error_response(exc)
+
+
+@router.post(
+    "/{review_run_id}/revision-draft",
+    response_model=ContractRevisionDraftResponse,
+    summary="根据风险建议生成可编辑的合同修订草案",
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+    },
+)
+async def generate_contract_revision_draft(
+    review_run_id: UUID,
+) -> ContractRevisionDraftResponse:
+    """模型调用和同步数据库读取放入线程池，避免阻塞 FastAPI 的 async 事件循环。"""
+
+    try:
+        return await run_in_threadpool(revision_service.generate_draft, review_run_id)
+    except RiskReviewError as exc:
+        return _error_response(exc)
+
+
+@router.post(
+    "/{review_run_id}/revisions",
+    response_model=ContractRevisionCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="确认采用修改并创建合同新修订版本",
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def create_contract_revision(
+    review_run_id: UUID,
+    payload: ContractRevisionCreateRequest,
+) -> ContractRevisionCreateResponse:
+    """请求模型由 Pydantic 校验，业务层只写入用户明确采用的修改。"""
+
+    try:
+        return await run_in_threadpool(
+            revision_service.create_revision,
+            review_run_id,
+            payload,
+        )
     except RiskReviewError as exc:
         return _error_response(exc)
 

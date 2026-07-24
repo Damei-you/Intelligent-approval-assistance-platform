@@ -26,11 +26,14 @@ import {
   X,
 } from '@lucide/vue'
 import {
+  createContractRevision,
   createRiskChatSession,
   createRiskReview,
+  generateContractRevisionDraft,
   getRiskChatSession,
   getRiskReview,
   getRiskReviewTrace,
+  getVectorizationStatus,
   listReviewContracts,
   sendRiskChatMessage,
 } from '../api/contracts'
@@ -63,12 +66,25 @@ const chatRetryRequest = ref(null)
 const chatMessagesElement = ref(null)
 const chatInputElement = ref(null)
 const chatDialogElement = ref(null)
+const revisionDialogElement = ref(null)
+const revisionOpen = ref(false)
+const revisionLoading = ref(false)
+const revisionApplying = ref(false)
+const revisionError = ref('')
+const revisionDraft = ref(null)
+const revisionChanges = ref([])
+const revisionResult = ref(null)
+const revisionVectorization = ref(null)
+const revisionClientRequestId = ref('')
 let pollingTimer = null
 let chatPollingTimer = null
+let revisionPollingTimer = null
 let chatOpenSequence = 0
+let revisionOpenSequence = 0
 let reviewRequestSequence = 0
 let traceRequestSequence = 0
 let chatTriggerElement = null
+let revisionTriggerElement = null
 let bodyScrollLocked = false
 let previousBodyOverflow = ''
 
@@ -99,6 +115,22 @@ const selectedContract = computed(() => (
 const isRunning = computed(() => ['PENDING', 'RUNNING'].includes(review.value?.status))
 const riskCount = computed(() => review.value?.findings?.filter((item) => item.status === 'RISK').length || 0)
 const insufficientCount = computed(() => review.value?.findings?.filter((item) => item.status === 'INSUFFICIENT_INFORMATION').length || 0)
+const actionableFindingCount = computed(() => (
+  review.value?.findings?.filter((item) => ['RISK', 'INSUFFICIENT_INFORMATION'].includes(item.status)).length || 0
+))
+const selectedRevisionChangeCount = computed(() => (
+  revisionChanges.value.filter((change) => change.accepted).length
+))
+const acceptedRevisionChangesValid = computed(() => {
+  const acceptedChanges = revisionChanges.value.filter((change) => change.accepted)
+  return acceptedChanges.length > 0 && acceptedChanges.every(
+    (change) => change.proposed_content?.trim(),
+  )
+})
+const revisionVectorizationReady = computed(() => revisionVectorization.value?.status === 'SUCCEEDED')
+const currentReviewIsOutdated = computed(() => (
+  review.value?.status === 'SUCCEEDED' && selectedContract.value?.latest_review_is_current === false
+))
 const traceBranchNodes = computed(() => CHECKS.map((check) => ({
   ...check,
   node: trace.value?.nodes?.find((node) => node.node_name === check.code.toLowerCase()) || null,
@@ -129,11 +161,13 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopPolling()
   stopChatPolling()
+  stopRevisionPolling()
   unlockPageScroll()
   window.removeEventListener('keydown', handleGlobalKeydown)
 })
 watch(selectedContractId, () => {
   closeChat()
+  closeRevision()
   resetTrace()
   loadLatestReview()
 })
@@ -295,6 +329,164 @@ function stopPolling() {
   }
 }
 
+async function openRevisionWorkspace(event = null) {
+  if (review.value?.status !== 'SUCCEEDED' || !actionableFindingCount.value) return
+  closeChat()
+  const sequence = ++revisionOpenSequence
+  if (event?.currentTarget) revisionTriggerElement = event.currentTarget
+  revisionOpen.value = true
+  revisionError.value = ''
+  lockPageScroll()
+  await nextTick()
+  revisionDialogElement.value?.focus()
+
+  if (
+    revisionResult.value
+    && revisionResult.value.review_run_id === review.value.review_run_id
+  ) {
+    await refreshRevisionVectorization(sequence)
+    return
+  }
+  await generateRevisionDraft(sequence)
+}
+
+async function generateRevisionDraft(sequence = revisionOpenSequence) {
+  if (!review.value?.review_run_id || revisionLoading.value) return
+  revisionLoading.value = true
+  revisionApplying.value = false
+  revisionError.value = ''
+  revisionDraft.value = null
+  revisionChanges.value = []
+  revisionResult.value = null
+  revisionVectorization.value = null
+  revisionClientRequestId.value = createClientRequestId()
+  try {
+    const draft = await generateContractRevisionDraft(review.value.review_run_id)
+    if (sequence !== revisionOpenSequence || !revisionOpen.value) return
+    revisionDraft.value = draft
+    revisionChanges.value = draft.changes.map((change) => ({
+      ...change,
+      accepted: true,
+    }))
+  } catch (error) {
+    if (sequence !== revisionOpenSequence || !revisionOpen.value) return
+    revisionError.value = error.message || '合同修订草案生成失败，请稍后重试。'
+  } finally {
+    if (sequence === revisionOpenSequence) revisionLoading.value = false
+  }
+}
+
+async function applyRevisionDraft() {
+  const reviewRunId = revisionDraft.value?.review_run_id
+  const selectedChanges = revisionChanges.value.filter((change) => change.accepted)
+  if (
+    !reviewRunId
+    || !selectedChanges.length
+    || revisionApplying.value
+  ) return
+
+  const sequence = revisionOpenSequence
+  revisionApplying.value = true
+  revisionError.value = ''
+  try {
+    const created = await createContractRevision(reviewRunId, {
+      source_document_id: revisionDraft.value.source_document_id,
+      client_request_id: revisionClientRequestId.value,
+      changes: selectedChanges.map((change) => ({
+        finding_id: change.finding_id,
+        action: change.action,
+        target_clause_id: change.target_clause_id,
+        proposed_clause_no: change.proposed_clause_no || null,
+        proposed_title: change.proposed_title || null,
+        proposed_content: change.proposed_content,
+      })),
+    })
+    if (sequence !== revisionOpenSequence || !revisionOpen.value) return
+    revisionResult.value = created
+    revisionVectorization.value = {
+      document_id: created.document_id,
+      job_id: created.vectorization_job_id,
+      status: created.vectorization_status,
+      progress: created.vectorization_status === 'SUCCEEDED' ? 100 : 0,
+      clause_count: created.clause_count,
+      vectorized_clause_count: created.vectorization_status === 'SUCCEEDED' ? created.clause_count : 0,
+    }
+    await refreshContractsAfterRevision()
+    if (!['SUCCEEDED', 'FAILED', 'CANCELLED', 'NOT_CONFIGURED'].includes(created.vectorization_status)) {
+      scheduleRevisionPolling(sequence)
+    }
+  } catch (error) {
+    if (sequence !== revisionOpenSequence || !revisionOpen.value) return
+    revisionError.value = error.message || '新修订版本创建失败，请检查修改内容后重试。'
+  } finally {
+    if (sequence === revisionOpenSequence) revisionApplying.value = false
+  }
+}
+
+async function refreshContractsAfterRevision() {
+  try {
+    contracts.value = await listReviewContracts()
+    return true
+  } catch (error) {
+    revisionError.value = '新版本已经创建，但合同列表刷新失败；重新进入页面后可继续操作。'
+    return false
+  }
+}
+
+function scheduleRevisionPolling(sequence = revisionOpenSequence) {
+  stopRevisionPolling()
+  revisionPollingTimer = window.setTimeout(async () => {
+    revisionPollingTimer = null
+    await refreshRevisionVectorization(sequence)
+  }, 1500)
+}
+
+async function refreshRevisionVectorization(sequence = revisionOpenSequence) {
+  const documentId = revisionResult.value?.document_id
+  if (!documentId) return
+  try {
+    const status = await getVectorizationStatus(documentId)
+    if (sequence !== revisionOpenSequence || !revisionOpen.value) return
+    revisionVectorization.value = status
+    if (status.status === 'SUCCEEDED') {
+      stopRevisionPolling()
+      await refreshContractsAfterRevision()
+    } else if (!['FAILED', 'CANCELLED', 'NOT_CONFIGURED'].includes(status.status)) {
+      scheduleRevisionPolling(sequence)
+    }
+  } catch (error) {
+    if (sequence !== revisionOpenSequence || !revisionOpen.value) return
+    revisionError.value = error.message || '新版本向量化状态查询失败。'
+  }
+}
+
+function stopRevisionPolling() {
+  if (revisionPollingTimer !== null) {
+    window.clearTimeout(revisionPollingTimer)
+    revisionPollingTimer = null
+  }
+}
+
+function closeRevision() {
+  const trigger = revisionTriggerElement
+  revisionOpenSequence += 1
+  stopRevisionPolling()
+  revisionOpen.value = false
+  revisionLoading.value = false
+  revisionApplying.value = false
+  revisionTriggerElement = null
+  unlockPageScroll()
+  nextTick(() => {
+    if (trigger?.isConnected) trigger.focus()
+  })
+}
+
+async function reviewCurrentRevision() {
+  if (!selectedContract.value?.review_ready || starting.value) return
+  closeRevision()
+  await startReview()
+}
+
 async function openChat(finding, event = null) {
   const sequence = ++chatOpenSequence
   stopChatPolling()
@@ -345,6 +537,14 @@ function closeChat() {
 }
 
 function handleGlobalKeydown(event) {
+  if (revisionOpen.value) {
+    if (event.key === 'Escape') {
+      closeRevision()
+      return
+    }
+    if (event.key === 'Tab') trapDialogFocus(revisionDialogElement.value, event)
+    return
+  }
   if (!activeChatFinding.value) return
   if (event.key === 'Escape') {
     closeChat()
@@ -354,7 +554,10 @@ function handleGlobalKeydown(event) {
 }
 
 function trapChatFocus(event) {
-  const dialog = chatDialogElement.value
+  trapDialogFocus(chatDialogElement.value, event)
+}
+
+function trapDialogFocus(dialog, event) {
   if (!dialog) return
   const focusable = Array.from(dialog.querySelectorAll(
     'button:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
@@ -594,6 +797,23 @@ function suggestionText(value) {
     APPROVE_AFTER_REVISION: '建议修改后审批',
     REJECT: '建议拒绝',
   }[value] || '等待汇总'
+}
+
+function revisionActionText(action) {
+  return action === 'ADD' ? '新增条款' : '替换条款'
+}
+
+function vectorizationStatusText(status) {
+  return {
+    NOT_CONFIGURED: '未配置向量模型',
+    NOT_STARTED: '等待创建任务',
+    QUEUED: '等待向量化',
+    RUNNING: '正在向量化',
+    RETRYING: '正在重试',
+    SUCCEEDED: '向量化完成',
+    FAILED: '向量化失败',
+    CANCELLED: '任务已取消',
+  }[status] || '准备中'
 }
 
 function candidatesFor(finding, evidenceType) {
@@ -987,9 +1207,180 @@ function traceTimelineStyle(node) {
           <div><strong>{{ riskCount }}</strong><span>风险项</span></div><div><strong>{{ insufficientCount }}</strong><span>信息不足</span></div><div><strong>{{ review?.findings?.length || 0 }}/4</strong><span>已完成</span></div>
         </div>
         <div class="approval-advice"><span>审批辅助建议</span><strong>{{ suggestionText(review?.approval_suggestion) }}</strong><p>{{ review?.summary || '四项检查完成后生成总体建议。' }}</p></div>
+        <div v-if="review?.status === 'SUCCEEDED' && actionableFindingCount" class="revision-entry" :class="{ outdated: currentReviewIsOutdated }">
+          <div class="revision-entry-icon"><FileText :size="18" /></div>
+          <div>
+            <span>{{ currentReviewIsOutdated ? '合同已有新版本' : '风险整改闭环' }}</span>
+            <strong>
+              {{ currentReviewIsOutdated
+                ? `当前已采用 V${selectedContract?.revision_no || ''}，本报告仍对应旧版本`
+                : `根据 ${actionableFindingCount} 项风险建议生成修订草案`
+              }}
+            </strong>
+            <p>{{ currentReviewIsOutdated ? '新版本向量化完成后，可重新运行风险审查并对比结果。' : '逐项确认后才会创建新修订版本，不会覆盖当前合同。' }}</p>
+            <button
+              v-if="currentReviewIsOutdated"
+              type="button"
+              :disabled="!selectedContract?.review_ready || starting"
+              @click="reviewCurrentRevision"
+            >
+              <RefreshCw :size="14" />{{ selectedContract?.review_ready ? '重新风险审查' : '等待新版本向量化' }}
+            </button>
+            <button v-else type="button" @click="openRevisionWorkspace($event)">
+              <Sparkles :size="14" />生成合同修订草案
+            </button>
+          </div>
+        </div>
         <div class="summary-note"><BookOpen :size="16" /><p><b>证据优先</b><span>模型只能引用本次检索结果，引用文本由后端从 PostgreSQL 回查。</span></p></div>
       </aside>
     </section>
+
+    <Teleport to="body">
+      <div v-if="revisionOpen" class="revision-overlay" @click.self="closeRevision">
+        <aside
+          ref="revisionDialogElement"
+          class="revision-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="contract-revision-title"
+          tabindex="-1"
+          :aria-busy="revisionLoading || revisionApplying"
+        >
+          <header class="revision-header">
+            <div class="revision-heading-icon"><Sparkles :size="20" /></div>
+            <div>
+              <span>风险整改 · 人工确认后创建新版本</span>
+              <h2 id="contract-revision-title">合同修订工作台</h2>
+              <p v-if="revisionDraft">V{{ revisionDraft.source_revision_no }} → V{{ revisionDraft.target_revision_no }} · {{ revisionDraft.contract_name }}</p>
+              <p v-else>{{ selectedContract?.contract_name }}</p>
+            </div>
+            <button class="revision-close" type="button" aria-label="关闭合同修订工作台" @click="closeRevision"><X :size="20" /></button>
+          </header>
+
+          <main class="revision-content">
+            <div v-if="revisionError" class="revision-inline-error" role="alert">
+              <CircleAlert :size="17" /><span>{{ revisionError }}</span>
+            </div>
+
+            <div v-if="revisionLoading" class="revision-state">
+              <LoaderCircle class="spinner" :size="28" />
+              <strong>正在生成整合同修订草案</strong>
+              <p>智能体正在汇总风险建议和已引用条款，不会直接写入数据库。</p>
+            </div>
+
+            <section v-else-if="revisionResult" class="revision-result">
+              <div class="revision-result-mark"><CheckCircle2 :size="29" /></div>
+              <span>新合同修订已创建</span>
+              <h3>V{{ revisionResult.revision_no }} 已保存</h3>
+              <p>已采用 {{ selectedRevisionChangeCount }} 项人工确认的修改；原 V{{ revisionResult.source_revision_no }} 及其风险报告均保留。</p>
+
+              <div class="revision-vectorization" :class="revisionVectorization?.status?.toLowerCase()">
+                <div>
+                  <span>{{ vectorizationStatusText(revisionVectorization?.status) }}</span>
+                  <strong>{{ revisionVectorization?.vectorized_clause_count || 0 }}/{{ revisionVectorization?.clause_count || revisionResult.clause_count }} 条款</strong>
+                </div>
+                <div class="revision-progress" aria-hidden="true">
+                  <i :style="{ width: `${revisionVectorization?.progress || 0}%` }"></i>
+                </div>
+                <p v-if="revisionVectorizationReady">新版本已可检索，现在可以重新执行四项风险检查。</p>
+                <p v-else-if="revisionVectorization?.status === 'NOT_CONFIGURED'">当前环境未配置向量模型，完成配置并向量化后才能重新审查。</p>
+                <p v-else-if="['FAILED', 'CANCELLED'].includes(revisionVectorization?.status)">向量化未完成，请先在合同导入模块重试任务。</p>
+                <p v-else>正在准备新版本的可检索条款，完成后会自动开放重新审查。</p>
+              </div>
+
+              <button
+                class="revision-review-button"
+                type="button"
+                :disabled="!revisionVectorizationReady || starting"
+                @click="reviewCurrentRevision"
+              >
+                <RefreshCw v-if="!starting" :size="16" />
+                <LoaderCircle v-else class="spinner" :size="16" />
+                重新风险审查 V{{ revisionResult.revision_no }}
+              </button>
+            </section>
+
+            <template v-else-if="revisionDraft">
+              <section class="revision-overview">
+                <div><Sparkles :size="18" /><span><b>智能体修订摘要</b><p>{{ revisionDraft.summary }}</p></span></div>
+                <ul v-if="revisionDraft.warnings?.length">
+                  <li v-for="warning in revisionDraft.warnings" :key="warning">{{ warning }}</li>
+                </ul>
+              </section>
+
+              <section class="revision-review-note">
+                <CircleAlert :size="17" />
+                <p><b>请逐项核对再采用</b><span>模型只提供草案。你可以取消某项修改，也可以直接编辑条款编号、标题和正文。</span></p>
+              </section>
+
+              <div class="revision-change-list">
+                <article v-for="(change, index) in revisionChanges" :key="change.change_id" class="revision-change" :class="{ accepted: change.accepted }">
+                  <header>
+                    <label>
+                      <input v-model="change.accepted" type="checkbox" />
+                      <span>{{ change.accepted ? '采用' : '不采用' }}</span>
+                    </label>
+                    <div>
+                      <small>{{ change.check_name }} · {{ revisionActionText(change.action) }}</small>
+                      <h3>{{ change.finding_title }}</h3>
+                    </div>
+                    <b>修改 {{ index + 1 }}</b>
+                  </header>
+
+                  <div v-if="change.action === 'REPLACE'" class="revision-original">
+                    <span>原条款 · {{ change.target_clause_no }} {{ change.target_clause_title }}</span>
+                    <p>{{ change.original_content }}</p>
+                  </div>
+                  <div v-else class="revision-add-position">
+                    <span>新增位置</span>
+                    <p>{{ change.target_clause_no ? `接在 ${change.target_clause_no} ${change.target_clause_title || ''} 之后` : '追加到合同末尾' }}</p>
+                  </div>
+
+                  <fieldset :disabled="!change.accepted">
+                    <legend>拟采用条款</legend>
+                    <div class="revision-fields">
+                      <label><span>条款编号</span><input v-model="change.proposed_clause_no" type="text" placeholder="例如 C018" /></label>
+                      <label><span>条款标题</span><input v-model="change.proposed_title" type="text" placeholder="请输入条款标题" /></label>
+                    </div>
+                    <label class="revision-content-field">
+                      <span>条款正文</span>
+                      <textarea v-model="change.proposed_content" rows="6" placeholder="请输入修订后的完整条款正文"></textarea>
+                    </label>
+                  </fieldset>
+
+                  <dl>
+                    <dt>修改摘要</dt><dd>{{ change.change_summary }}</dd>
+                    <dt>修改理由</dt><dd>{{ change.rationale }}</dd>
+                  </dl>
+                  <ul v-if="change.warnings?.length" class="revision-change-warnings">
+                    <li v-for="warning in change.warnings" :key="warning">{{ warning }}</li>
+                  </ul>
+                </article>
+              </div>
+            </template>
+
+            <div v-else-if="revisionError" class="revision-state error">
+              <FileText :size="28" /><strong>暂时无法生成草案</strong>
+              <p>风险报告或合同版本可能已经变化，请刷新后重试。</p>
+              <button type="button" @click="generateRevisionDraft"><RefreshCw :size="14" />重新生成</button>
+            </div>
+          </main>
+
+          <footer v-if="revisionDraft && !revisionResult && !revisionLoading" class="revision-footer">
+            <p><strong>已选择 {{ selectedRevisionChangeCount }}/{{ revisionChanges.length }} 项</strong><span>确认后创建 V{{ revisionDraft.target_revision_no }}，不会覆盖 V{{ revisionDraft.source_revision_no }}</span></p>
+            <button
+              type="button"
+              :disabled="revisionApplying || !acceptedRevisionChangesValid"
+              @click="applyRevisionDraft"
+            >
+              <LoaderCircle v-if="revisionApplying" class="spinner" :size="16" />
+              <Check v-else :size="16" />
+              {{ revisionApplying ? '正在创建新版本' : `确认采用并创建 V${revisionDraft.target_revision_no}` }}
+            </button>
+          </footer>
+        </aside>
+      </div>
+    </Teleport>
 
     <Teleport to="body">
       <div v-if="activeChatFinding" class="chat-overlay" @click.self="closeChat">
@@ -1168,6 +1559,19 @@ function traceTimelineStyle(node) {
 .review-empty { min-height: 290px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #86928a; }.review-empty strong { margin-top: 12px; color: var(--navy); font-size: 12px; }.review-empty p { margin: 7px 0; font-size: 9px; }
 .review-summary { padding: 28px 23px; border-left: 1px solid #d8dfd8; background: #eef3ee; }.risk-orb { width: 132px; height: 132px; margin: 28px auto 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid #cdd9d0; border-radius: 50%; color: #718178; background: rgba(255,255,255,.65); }.risk-orb strong { margin-top: 6px; color: var(--navy); font-size: 15px; }.risk-orb span { margin-top: 3px; font-size: 8px; }.risk-orb.high { color: #b74f47; border-color: #e0aca8; background: #f8e6e4; }.risk-orb.medium { color: #a77b23; border-color: #e6cf93; background: #f8f0da; }.risk-orb.low { color: var(--green); border-color: #a9c8b3; background: #e1efe6; }
 .summary-stats { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid #d7dfd8; border-radius: 9px; overflow: hidden; }.summary-stats div { padding: 11px 5px; display: flex; flex-direction: column; align-items: center; gap: 3px; background: rgba(255,255,255,.52); }.summary-stats div + div { border-left: 1px solid #d7dfd8; }.summary-stats strong { color: var(--navy); font-size: 14px; }.summary-stats span { color: #849087; font-size: 8px; }.approval-advice { margin-top: 14px; padding: 14px; border-radius: 10px; color: white; background: var(--green); }.approval-advice span { font-size: 8px; opacity: .72; }.approval-advice strong { margin-top: 4px; display: block; font-size: 13px; }.approval-advice p { margin: 8px 0 0; font-size: 8px; line-height: 1.6; opacity: .78; }.summary-note { margin-top: 14px; padding: 12px; display: flex; gap: 8px; color: var(--green); background: #dde9e1; border-radius: 9px; }.summary-note p { margin: 0; display: flex; flex-direction: column; gap: 3px; }.summary-note b { font-size: 9px; }.summary-note span { color: #687c70; font-size: 8px; line-height: 1.5; }
+.revision-entry { margin-top: 14px; padding: 13px; display: flex; align-items: flex-start; gap: 9px; border: 1px solid #bed3c4; border-radius: 10px; background: #f8fbf8; }.revision-entry.outdated { border-color: #dccb9d; background: #fffaf0; }.revision-entry-icon { width: 31px; height: 31px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 8px; color: white; background: var(--green); }.revision-entry.outdated .revision-entry-icon { color: #805f1c; background: #f3dfaa; }.revision-entry > div:last-child { min-width: 0; }.revision-entry span { color: var(--green); font-size: 8px; font-weight: 700; }.revision-entry.outdated span { color: #87651e; }.revision-entry strong { margin-top: 3px; display: block; color: var(--navy); font-size: 10px; line-height: 1.45; }.revision-entry p { margin: 5px 0 9px; color: #738078; font-size: 8px; line-height: 1.5; }.revision-entry button { width: 100%; padding: 8px 9px; display: flex; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 7px; color: white; background: var(--green); font-size: 8px; font-weight: 700; cursor: pointer; }.revision-entry.outdated button { color: #705518; background: #f1d992; }.revision-entry button:disabled { cursor: not-allowed; opacity: .55; }
+
+.revision-overlay { position: fixed; inset: 0; z-index: 1100; display: flex; justify-content: flex-end; overscroll-behavior: contain; background: rgba(19, 33, 27, .48); backdrop-filter: blur(2px); }
+.revision-drawer { width: min(900px, 100vw); height: 100dvh; display: flex; flex-direction: column; overflow: hidden; outline: none; color: #34463d; background: #f7f9f7; box-shadow: -24px 0 70px rgba(15, 35, 25, .2); animation: chat-drawer-in .22s ease-out; }
+.revision-header { padding: 19px 23px 16px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #d8e1da; background: #eff5f0; }.revision-heading-icon { width: 40px; height: 40px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 11px; color: white; background: var(--green); }.revision-header > div:nth-child(2) { min-width: 0; flex: 1; }.revision-header span { color: var(--green); font-size: 8px; font-weight: 700; letter-spacing: .04em; }.revision-header h2 { margin: 3px 0 0; color: var(--navy); font-size: 16px; }.revision-header p { margin: 3px 0 0; overflow: hidden; color: #748179; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }.revision-close { width: 36px; height: 36px; display: grid; flex: 0 0 auto; place-items: center; border: 0; border-radius: 9px; color: #64736b; background: transparent; cursor: pointer; }.revision-close:hover { color: var(--navy); background: #dfe9e1; }
+.revision-content { min-height: 0; padding: 20px 22px 28px; flex: 1; overflow-y: auto; }.revision-inline-error { margin-bottom: 13px; padding: 10px 12px; display: flex; align-items: flex-start; gap: 7px; border: 1px solid #e6beba; border-radius: 8px; color: #99433e; background: #fff4f2; font-size: 9px; line-height: 1.55; }.revision-inline-error svg { flex: 0 0 auto; }
+.revision-state { min-height: 340px; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--green); text-align: center; }.revision-state strong { margin-top: 11px; color: var(--navy); font-size: 14px; }.revision-state p { max-width: 390px; margin: 7px 0 0; color: #77847c; font-size: 10px; line-height: 1.6; }.revision-state.error { color: #a54b45; }.revision-state button { margin-top: 13px; padding: 8px 11px; display: flex; align-items: center; gap: 5px; border: 1px solid #dcaeaa; border-radius: 8px; color: #94413c; background: white; cursor: pointer; }
+.revision-overview { padding: 15px; border: 1px solid #c9dacd; border-radius: 11px; background: #edf5ef; }.revision-overview > div { display: flex; align-items: flex-start; gap: 9px; color: var(--green); }.revision-overview span { min-width: 0; }.revision-overview b { color: var(--navy); font-size: 10px; }.revision-overview p { margin: 4px 0 0; color: #5e7166; font-size: 9px; line-height: 1.6; }.revision-overview ul { margin: 10px 0 0; padding: 9px 11px 9px 27px; border-radius: 8px; color: #80611f; background: #fff8e7; font-size: 8px; line-height: 1.55; }
+.revision-review-note { margin: 12px 0; padding: 11px 13px; display: flex; align-items: flex-start; gap: 8px; border: 1px solid #e4d29f; border-radius: 9px; color: #8a671c; background: #fff9e9; }.revision-review-note p { margin: 0; display: flex; flex-direction: column; gap: 3px; }.revision-review-note b { color: #6f5318; font-size: 9px; }.revision-review-note span { color: #8d7c51; font-size: 8px; line-height: 1.5; }
+.revision-change-list { display: flex; flex-direction: column; gap: 12px; }.revision-change { overflow: hidden; border: 1px solid #dce3dd; border-radius: 12px; background: #fbfcfb; opacity: .67; transition: border-color .18s ease, opacity .18s ease; }.revision-change.accepted { border-color: #a9c7b2; background: white; opacity: 1; box-shadow: 0 8px 24px rgba(35, 60, 45, .05); }.revision-change > header { padding: 13px 14px; display: flex; align-items: center; gap: 11px; border-bottom: 1px solid #e3e9e4; background: #f4f7f4; }.revision-change.accepted > header { background: #eff6f1; }.revision-change > header label { display: flex; flex-direction: column; align-items: center; gap: 3px; color: #78857d; font-size: 7px; cursor: pointer; }.revision-change > header input { width: 17px; height: 17px; accent-color: var(--green); }.revision-change > header > div { min-width: 0; flex: 1; }.revision-change > header small { color: var(--green); font-size: 8px; font-weight: 700; }.revision-change > header h3 { margin: 3px 0 0; color: var(--navy); font-size: 11px; }.revision-change > header > b { padding: 4px 7px; border-radius: 8px; color: #67766e; background: white; font-size: 7px; white-space: nowrap; }
+.revision-original, .revision-add-position { margin: 13px 14px 0; padding: 10px 11px; border-left: 3px solid #c5d0c8; border-radius: 4px 8px 8px 4px; background: #f5f7f5; }.revision-original span, .revision-add-position span { color: #7a8780; font-size: 8px; font-weight: 700; }.revision-original p, .revision-add-position p { margin: 5px 0 0; color: #637068; font-size: 9px; line-height: 1.6; white-space: pre-wrap; }.revision-change fieldset { margin: 12px 14px; padding: 0; border: 0; }.revision-change fieldset:disabled { opacity: .55; }.revision-change legend { margin-bottom: 8px; color: var(--navy); font-size: 9px; font-weight: 700; }.revision-fields { display: grid; grid-template-columns: 150px 1fr; gap: 9px; }.revision-change fieldset label { display: flex; flex-direction: column; gap: 5px; }.revision-change fieldset label > span { color: #738078; font-size: 8px; font-weight: 700; }.revision-change input[type="text"], .revision-change textarea { padding: 9px 10px; border: 1px solid #ced9d0; border-radius: 8px; outline: none; color: var(--navy); background: #fbfcfb; font-family: inherit; font-size: 10px; line-height: 1.55; }.revision-change input[type="text"]:focus, .revision-change textarea:focus { border-color: #7ba78a; box-shadow: 0 0 0 3px rgba(53, 110, 74, .08); }.revision-content-field { margin-top: 9px; }.revision-change textarea { resize: vertical; }.revision-change dl { margin: 0; padding: 11px 14px; display: grid; grid-template-columns: auto 1fr; gap: 5px 9px; border-top: 1px solid #e4e9e5; font-size: 8px; }.revision-change dt { color: #748179; font-weight: 700; }.revision-change dd { margin: 0; color: #5d6c63; line-height: 1.55; }.revision-change-warnings { margin: 0; padding: 9px 14px 9px 31px; border-top: 1px solid #ead8a8; color: #876522; background: #fff9e9; font-size: 8px; line-height: 1.5; }
+.revision-footer { padding: 13px 22px calc(13px + env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid #d6e0d8; background: white; box-shadow: 0 -8px 25px rgba(24, 50, 35, .05); }.revision-footer p { margin: 0; display: flex; flex-direction: column; gap: 3px; }.revision-footer strong { color: var(--navy); font-size: 10px; }.revision-footer span { color: #7e8a83; font-size: 8px; }.revision-footer button, .revision-review-button { padding: 10px 14px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 8px; color: white; background: var(--green); font-size: 9px; font-weight: 700; cursor: pointer; }.revision-footer button:disabled, .revision-review-button:disabled { cursor: not-allowed; opacity: .5; }
+.revision-result { max-width: 600px; min-height: 430px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }.revision-result-mark { width: 58px; height: 58px; display: grid; place-items: center; border-radius: 50%; color: white; background: var(--green); box-shadow: 0 9px 24px rgba(29, 105, 59, .18); }.revision-result > span { margin-top: 13px; color: var(--green); font-size: 9px; font-weight: 700; }.revision-result h3 { margin: 4px 0 0; color: var(--navy); font-size: 21px; }.revision-result > p { margin: 7px 0 0; color: #718078; font-size: 10px; line-height: 1.6; }.revision-vectorization { width: 100%; margin-top: 20px; padding: 15px; border: 1px solid #d4dfd6; border-radius: 11px; text-align: left; background: white; }.revision-vectorization > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.revision-vectorization span { color: var(--green); font-size: 9px; font-weight: 700; }.revision-vectorization strong { color: var(--navy); font-size: 9px; }.revision-progress { height: 7px; margin-top: 10px; overflow: hidden; border-radius: 10px; background: #e4ebe5; }.revision-progress i { height: 100%; display: block; border-radius: inherit; background: var(--green); transition: width .25s ease; }.revision-vectorization p { margin: 9px 0 0; color: #77847d; font-size: 8px; line-height: 1.5; }.revision-vectorization.failed, .revision-vectorization.cancelled, .revision-vectorization.not_configured { border-color: #e2c5ad; background: #fffaf4; }.revision-review-button { margin-top: 15px; }
 
 .chat-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; justify-content: flex-end; overscroll-behavior: contain; background: rgba(19, 33, 27, .42); backdrop-filter: blur(2px); }
 .chat-drawer { width: min(660px, 100vw); height: 100dvh; display: flex; flex-direction: column; overflow: hidden; outline: none; color: #34463d; background: #fbfcfa; box-shadow: -24px 0 70px rgba(15, 35, 25, .18); animation: chat-drawer-in .22s ease-out; }
@@ -1182,6 +1586,6 @@ function traceTimelineStyle(node) {
 .chat-inline-error { padding: 8px 22px; display: flex; align-items: center; gap: 6px; border-top: 1px solid #efcbc8; color: #9b403b; background: #fff2f0; font-size: 9px; }
 .chat-composer { padding: 12px 18px 15px; border-top: 1px solid #d8e1da; background: white; }.chat-composer > label { margin-bottom: 7px; display: flex; align-items: center; gap: 7px; }.chat-composer > label span { color: #7c8881; font-size: 8px; font-weight: 700; }.chat-composer select { padding: 4px 7px; border: 1px solid #d5dfd7; border-radius: 6px; outline: none; color: #4b5f54; background: #f8faf8; font-size: 8px; }.composer-input { display: flex; align-items: flex-end; gap: 8px; }.composer-input textarea { min-height: 58px; max-height: 130px; padding: 10px 11px; flex: 1; resize: vertical; border: 1px solid #cfdad1; border-radius: 10px; outline: none; color: var(--navy); background: #fbfcfb; font-family: inherit; font-size: 10px; line-height: 1.55; }.composer-input textarea:focus { border-color: #82ad91; box-shadow: 0 0 0 3px rgba(59, 111, 77, .09); }.composer-input textarea:disabled { cursor: not-allowed; opacity: .6; }.composer-input button { width: 39px; height: 39px; display: grid; flex: 0 0 auto; place-items: center; border: 0; border-radius: 9px; color: white; background: var(--green); cursor: pointer; }.composer-input button:disabled { cursor: not-allowed; opacity: .45; }.chat-composer > p { margin: 6px 2px 0; color: #929c96; font-size: 7px; }
 @media (max-width: 980px) { .review-hero-row { align-items: flex-start; flex-direction: column; }.review-dashboard { grid-template-columns: 1fr; }.review-summary { border-left: 0; border-top: 1px solid #d8dfd8; }.contract-picker-row { grid-template-columns: 1fr 1fr; }.contract-select { grid-column: 1 / -1; }.trace-stats { grid-template-columns: repeat(3, 1fr); }.trace-stats div + div { border-left: 0; }.trace-stats div:not(:nth-child(3n + 1)) { border-left: 1px solid #e2e8e3; }.trace-stats div:nth-child(n + 4) { border-top: 1px solid #e2e8e3; } }
-@media (max-width: 680px) { .review-page { width: min(100% - 24px, 1360px); }.review-hero { padding-top: 38px; }.review-hero h1 { font-size: 26px; }.review-launch-card, .review-main-column, .review-summary { padding: 20px 17px; }.launch-copy { align-items: flex-start; flex-wrap: wrap; }.trace-toggle-button { width: 100%; margin-left: 0; justify-content: center; }.contract-picker-row, .check-overview, .evidence-grid, .candidate-grid { grid-template-columns: 1fr; }.review-start-button, .contract-readiness { width: 100%; }.agent-trace-panel { padding: 18px 14px; }.trace-header { align-items: flex-start; flex-wrap: wrap; }.trace-run-status { margin-left: 47px; }.trace-stats { grid-template-columns: repeat(2, 1fr); }.trace-stats div:not(:nth-child(3n + 1)) { border-left: 0; }.trace-stats div:nth-child(even) { border-left: 1px solid #e2e8e3; }.trace-stats div:nth-child(n + 3) { border-top: 1px solid #e2e8e3; }.trace-branch-grid { grid-template-columns: 1fr; }.trace-branch[open] { grid-column: span 1; }.trace-branch-result { display: none; }.trace-retrieval-list { grid-template-columns: 1fr; }.trace-route-row { align-items: flex-start; flex-wrap: wrap; }.trace-route-row span:first-child { width: 100%; }.trace-privacy-note { align-items: flex-start; flex-wrap: wrap; }.trace-privacy-note span { width: 100%; margin-left: 20px; }.review-section-heading { align-items: flex-start; flex-direction: column; }.finding-header { align-items: flex-start; flex-wrap: wrap; }.finding-badges { margin-left: 45px; }.finding-chat-entry { align-items: stretch; flex-direction: column; }.finding-chat-entry button { justify-content: center; }.chat-header { padding: calc(15px + env(safe-area-inset-top)) 15px 15px; }.chat-context-strip { padding: 9px 15px; }.chat-quick-actions { padding: 9px 15px; grid-template-columns: 1fr; }.chat-quick-actions button { align-items: center; }.chat-quick-actions small { display: none; }.chat-messages { padding: 16px 14px; }.chat-composer { padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); }.chat-composer select, .composer-input textarea { font-size: 16px; }.draft-comparison { grid-template-columns: 1fr; }.draft-comparison > div + div { border-top: 1px solid #e0e6e1; border-left: 0; } }
+@media (max-width: 680px) { .review-page { width: min(100% - 24px, 1360px); }.review-hero { padding-top: 38px; }.review-hero h1 { font-size: 26px; }.review-launch-card, .review-main-column, .review-summary { padding: 20px 17px; }.launch-copy { align-items: flex-start; flex-wrap: wrap; }.trace-toggle-button { width: 100%; margin-left: 0; justify-content: center; }.contract-picker-row, .check-overview, .evidence-grid, .candidate-grid { grid-template-columns: 1fr; }.review-start-button, .contract-readiness { width: 100%; }.agent-trace-panel { padding: 18px 14px; }.trace-header { align-items: flex-start; flex-wrap: wrap; }.trace-run-status { margin-left: 47px; }.trace-stats { grid-template-columns: repeat(2, 1fr); }.trace-stats div:not(:nth-child(3n + 1)) { border-left: 0; }.trace-stats div:nth-child(even) { border-left: 1px solid #e2e8e3; }.trace-stats div:nth-child(n + 3) { border-top: 1px solid #e2e8e3; }.trace-branch-grid { grid-template-columns: 1fr; }.trace-branch[open] { grid-column: span 1; }.trace-branch-result { display: none; }.trace-retrieval-list { grid-template-columns: 1fr; }.trace-route-row { align-items: flex-start; flex-wrap: wrap; }.trace-route-row span:first-child { width: 100%; }.trace-privacy-note { align-items: flex-start; flex-wrap: wrap; }.trace-privacy-note span { width: 100%; margin-left: 20px; }.review-section-heading { align-items: flex-start; flex-direction: column; }.finding-header { align-items: flex-start; flex-wrap: wrap; }.finding-badges { margin-left: 45px; }.finding-chat-entry { align-items: stretch; flex-direction: column; }.finding-chat-entry button { justify-content: center; }.revision-header { padding: calc(15px + env(safe-area-inset-top)) 15px 14px; }.revision-content { padding: 15px 13px 22px; }.revision-fields { grid-template-columns: 1fr; }.revision-change input[type="text"], .revision-change textarea { font-size: 16px; }.revision-footer { padding: 11px 13px calc(11px + env(safe-area-inset-bottom)); align-items: stretch; flex-direction: column; }.revision-footer button { width: 100%; }.chat-header { padding: calc(15px + env(safe-area-inset-top)) 15px 15px; }.chat-context-strip { padding: 9px 15px; }.chat-quick-actions { padding: 9px 15px; grid-template-columns: 1fr; }.chat-quick-actions button { align-items: center; }.chat-quick-actions small { display: none; }.chat-messages { padding: 16px 14px; }.chat-composer { padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); }.chat-composer select, .composer-input textarea { font-size: 16px; }.draft-comparison { grid-template-columns: 1fr; }.draft-comparison > div + div { border-top: 1px solid #e0e6e1; border-left: 0; } }
 @media (max-width: 680px) { .retrieval-candidates summary { align-items: flex-start; flex-wrap: wrap; }.candidate-summary-meta { width: 100%; margin-left: 22px; justify-content: flex-end; } }
 </style>

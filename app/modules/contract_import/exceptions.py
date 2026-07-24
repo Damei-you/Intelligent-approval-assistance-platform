@@ -35,6 +35,16 @@ class PreviewFileMismatchError(ContractImportError):
     code = "PREVIEW_FILE_MISMATCH"
 
 
+class CurrentContractRevisionChangedError(ContractImportError):
+    status_code = 409
+    code = "CURRENT_CONTRACT_REVISION_CHANGED"
+
+
+class RevisionIdempotencyConflictError(ContractImportError):
+    status_code = 409
+    code = "REVISION_IDEMPOTENCY_CONFLICT"
+
+
 class ImportRecordNotFoundError(ContractImportError):
     status_code = 404
     code = "IMPORT_RECORD_NOT_FOUND"

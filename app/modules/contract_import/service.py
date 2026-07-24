@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.core.config import PROJECT_ROOT, settings
 from app.modules.contract_import.parsers import (
@@ -31,7 +31,10 @@ from app.modules.contract_import.schemas import (
     ParsedClause,
     ParsedContract,
 )
-from app.modules.vectorization.service import enqueue_document_vectorization
+from app.modules.vectorization.service import (
+    VectorizationRepository,
+    enqueue_document_vectorization,
+)
 
 
 class ContractImportService:
@@ -132,14 +135,26 @@ class ContractImportService:
 
     def import_json(self, payload: ContractJsonImportRequest) -> ContractImportResponse:
         parsed = self._from_json_payload(payload)
-        canonical_json = json.dumps(
-            payload.model_dump(mode="json"),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        parsed.file_hash = hashlib.sha256(canonical_json).hexdigest()
+        parsed.file_hash = _hash_json_payload(payload)
         result = self.repository.save_import(parsed)
+        return self._build_import_response(result)
+
+    def import_revision_json(
+        self,
+        payload: ContractJsonImportRequest,
+        *,
+        expected_current_document_id: UUID,
+        idempotency_key: UUID,
+    ) -> ContractImportResponse:
+        """确认采用人工检查后的修订草案，并原子校验来源仍是当前版本。"""
+
+        parsed = self._from_json_payload(payload)
+        parsed.file_hash = _hash_json_payload(payload)
+        result = self.repository.save_import(
+            parsed,
+            expected_current_document_id=expected_current_document_id,
+            idempotency_key=idempotency_key,
+        )
         return self._build_import_response(result)
 
     def get_import_detail(self, document_id: str) -> ContractImportDetail:
@@ -165,6 +180,22 @@ class ContractImportService:
 
     def _build_import_response(self, result: dict[str, object]) -> ContractImportResponse:
         """在导入事务提交后创建异步向量任务，并合并为接口响应。"""
+
+        if result.pop("idempotent_replay", False):
+            # HTTP 重试命中既有修订版时先恢复原任务状态。若数据库已经提交、但进程恰好在
+            # 创建异步任务前中断，则状态为 NOT_STARTED，此时补建一次任务以完成故障恢复。
+            vectorization = VectorizationRepository().get_document_status(
+                result["document_id"]
+            )
+            if vectorization.status == "NOT_STARTED":
+                recovered = enqueue_document_vectorization(result["document_id"])
+                result["vectorization_job_id"] = recovered["job_id"]
+                result["vectorization_status"] = recovered["status"]
+            else:
+                result["vectorization_job_id"] = vectorization.job_id
+                result["vectorization_status"] = vectorization.status
+            result["message"] = "该修订确认请求已经处理，已返回原新版本。"
+            return ContractImportResponse.model_validate(result)
 
         # 向量任务必须放在 save_import 返回之后创建，确保 Celery Worker 不会读到尚未提交的条款。
         # 即使 Redis 不可用，合同导入也已经成功；此时记录 FAILED 状态供前端明确展示。
@@ -289,6 +320,18 @@ def _relative_storage_uri(path: Path) -> str:
         return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
     except ValueError:
         return str(path.resolve())
+
+
+def _hash_json_payload(payload: ContractJsonImportRequest) -> str:
+    """为结构化合同生成稳定哈希，用于识别幂等重试是否携带了相同内容。"""
+
+    canonical_json = json.dumps(
+        payload.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical_json).hexdigest()
 
 
 def _default_mime_type(import_format: ImportFormat) -> str:

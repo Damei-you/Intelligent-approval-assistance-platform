@@ -1,6 +1,9 @@
 @baseUrl = http://127.0.0.1:8000
 @findingId = 请替换为finding_id
 @chatSessionId = 请替换为session_id
+@reviewRunId = 请替换为review_run_id
+@sourceDocumentId = 请替换为来源document_id
+@targetClauseId = 请替换为目标clause_id
 
 ### 健康检查
 GET {{baseUrl}}/health
@@ -162,6 +165,31 @@ Accept: application/json
 # 不返回原始 Prompt、合同全文或 LangGraph 内部 input_data/output_data。
 GET http://127.0.0.1:8000/api/v1/risk-reviews/请替换为review_run_id/trace
 Accept: application/json
+
+### 根据风险报告生成整合同修订草案（只预览，不写数据库）
+POST {{baseUrl}}/api/v1/risk-reviews/{{reviewRunId}}/revision-draft
+Accept: application/json
+
+### 人工确认采用修改并创建下一合同修订版本
+# finding_id、target_clause_id 和建议文本来自上一个草案响应。
+# 网络重试必须复用相同 client_request_id；同一键不会重复创建版本。
+POST {{baseUrl}}/api/v1/risk-reviews/{{reviewRunId}}/revisions
+Content-Type: application/json
+
+{
+  "source_document_id": "{{sourceDocumentId}}",
+  "client_request_id": "55555555-5555-4555-8555-555555555555",
+  "changes": [
+    {
+      "finding_id": "{{findingId}}",
+      "action": "REPLACE",
+      "target_clause_id": "{{targetClauseId}}",
+      "proposed_clause_no": "第一条",
+      "proposed_title": "付款安排",
+      "proposed_content": "合同标的验收合格后支付合同价款。"
+    }
+  ]
+}
 
 ### 为风险项创建或恢复多轮问答会话
 # finding_id 来自风险审查详情中某一项 finding；会话会固定该风险项、审查任务和合同修订版本。

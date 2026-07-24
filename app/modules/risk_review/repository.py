@@ -653,6 +653,115 @@ class RiskReviewRepository:
                     (review_run_id,),
                 )
 
+    def get_revision_context(self, review_run_id: UUID) -> dict[str, Any]:
+        """读取生成和确认合同修订所需的固定审查版本、风险项与证据。"""
+
+        with open_connection() as connection:
+            review = connection.execute(
+                """
+                SELECT
+                    rr.id AS review_run_id,
+                    rr.status AS review_status,
+                    rr.contract_id,
+                    rr.contract_document_id AS source_document_id,
+                    c.contract_no,
+                    c.name AS contract_name,
+                    ct.code AS contract_type_code,
+                    c.counterparty,
+                    c.amount,
+                    c.currency,
+                    source_document.title AS document_title,
+                    source_document.revision_no AS source_revision_no,
+                    source_document.metadata AS source_metadata,
+                    current_document.id AS current_document_id
+                FROM review_runs rr
+                JOIN contracts c ON c.id = rr.contract_id
+                JOIN contract_types ct ON ct.id = c.contract_type_id
+                JOIN documents source_document
+                  ON source_document.id = rr.contract_document_id
+                 AND source_document.document_type = 'CONTRACT'
+                LEFT JOIN documents current_document
+                  ON current_document.contract_id = c.id
+                 AND current_document.document_type = 'CONTRACT'
+                 AND current_document.is_current = TRUE
+                WHERE rr.id = %s
+                """,
+                (review_run_id,),
+            ).fetchone()
+            if review is None:
+                raise RiskReviewError("REVIEW_NOT_FOUND", "风险审查任务不存在。", 404)
+
+            clause_rows = connection.execute(
+                """
+                SELECT
+                    dc.id,
+                    dc.chunk_index,
+                    dc.clause_no,
+                    dc.title,
+                    dc.content,
+                    dc.page_no,
+                    dc.metadata
+                FROM document_chunks dc
+                WHERE dc.document_id = %s
+                  AND dc.chunk_type = 'CONTRACT_CLAUSE'
+                ORDER BY dc.chunk_index
+                """,
+                (review["source_document_id"],),
+            ).fetchall()
+            finding_rows = connection.execute(
+                """
+                SELECT
+                    rf.id,
+                    rci.code AS check_code,
+                    rci.name AS check_name,
+                    rf.status,
+                    rf.severity,
+                    rf.title,
+                    rf.description,
+                    rf.suggestion
+                FROM risk_findings rf
+                JOIN review_check_items rci ON rci.id = rf.check_item_id
+                WHERE rf.review_run_id = %s
+                ORDER BY rci.sort_order
+                """,
+                (review_run_id,),
+            ).fetchall()
+            evidence_rows = connection.execute(
+                """
+                SELECT
+                    fe.finding_id,
+                    fe.evidence_type,
+                    d.title AS document_title,
+                    dc.clause_no,
+                    dc.title,
+                    fe.cited_text
+                FROM finding_evidence fe
+                JOIN risk_findings rf ON rf.id = fe.finding_id
+                JOIN document_chunks dc ON dc.id = fe.chunk_id
+                JOIN documents d ON d.id = dc.document_id
+                WHERE rf.review_run_id = %s
+                ORDER BY fe.finding_id, fe.evidence_type, fe.sort_order
+                """,
+                (review_run_id,),
+            ).fetchall()
+
+        evidence_by_finding: dict[UUID, list[dict[str, Any]]] = {}
+        for evidence_row in evidence_rows:
+            evidence = dict(evidence_row)
+            finding_id = evidence.pop("finding_id")
+            evidence_by_finding.setdefault(finding_id, []).append(evidence)
+
+        context = dict(review)
+        context["clauses"] = [dict(row) for row in clause_rows]
+        context["findings"] = [
+            {
+                **dict(row),
+                "evidence": evidence_by_finding.get(row["id"], []),
+            }
+            for row in finding_rows
+        ]
+        return context
+
     def get_review_detail(self, review_run_id: UUID) -> RiskReviewDetail:
         with open_connection() as connection:
             review = connection.execute(

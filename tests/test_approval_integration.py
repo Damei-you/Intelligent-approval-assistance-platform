@@ -18,7 +18,13 @@ from app.modules.approval.schemas import ApprovalActionRequest
 from app.modules.contract_import.repository import ContractImportRepository
 from app.modules.contract_import.schemas import ContractJsonImportRequest
 from app.modules.contract_import.service import ContractImportService
+from app.modules.risk_review.exceptions import RiskReviewError
 from app.modules.risk_review.repository import RiskReviewRepository
+from app.modules.risk_review.revision_service import ContractRevisionService
+from app.modules.risk_review.schemas import (
+    ContractRevisionApplyChange,
+    ContractRevisionCreateRequest,
+)
 
 
 @unittest.skipUnless(
@@ -79,6 +85,7 @@ class ApprovalIntegrationTests(unittest.TestCase):
                         "调整付款节点后再审批。",
                     ),
                 ).fetchone()
+                self.finding_id = finding["id"]
                 chunk = connection.execute(
                     "SELECT id, content FROM document_chunks WHERE document_id = %s",
                     (self.document_id,),
@@ -190,8 +197,13 @@ class ApprovalIntegrationTests(unittest.TestCase):
         with open_connection() as connection:
             with connection.transaction():
                 connection.execute(
-                    "DELETE FROM async_jobs WHERE resource_id = %s",
-                    (self.document_id,),
+                    """
+                    DELETE FROM async_jobs
+                    WHERE resource_id IN (
+                        SELECT id FROM documents WHERE contract_id = %s
+                    )
+                    """,
+                    (self.contract_id,),
                 )
                 # finding_evidence 和 retrieval_hits 同时引用条款与审查链路。先删除审批、
                 # 再删除审查，可让审查侧级联完整结束，最后再删除合同及其条款。
@@ -207,6 +219,94 @@ class ApprovalIntegrationTests(unittest.TestCase):
                     "DELETE FROM contracts WHERE id = %s",
                     (self.contract_id,),
                 )
+
+    def test_risk_revision_creates_traceable_v2_and_is_idempotent(self) -> None:
+        """人工确认风险建议后创建 V2；重复请求返回同一版本，旧报告不能继续创建 V3。"""
+
+        with open_connection() as connection:
+            source_clause = connection.execute(
+                """
+                SELECT id
+                FROM document_chunks
+                WHERE document_id = %s
+                  AND chunk_type = 'CONTRACT_CLAUSE'
+                ORDER BY chunk_index
+                LIMIT 1
+                """,
+                (self.document_id,),
+            ).fetchone()
+        client_request_id = uuid4()
+        request = ContractRevisionCreateRequest(
+            source_document_id=self.document_id,
+            client_request_id=client_request_id,
+            changes=[
+                ContractRevisionApplyChange(
+                    finding_id=self.finding_id,
+                    action="REPLACE",
+                    target_clause_id=source_clause["id"],
+                    proposed_clause_no="第一条",
+                    proposed_title="付款安排",
+                    proposed_content="合同标的验收合格后支付合同价款。",
+                )
+            ],
+        )
+        service = ContractRevisionService(repository=RiskReviewRepository())
+
+        created = service.create_revision(self.review_run_id, request)
+        replayed = service.create_revision(self.review_run_id, request)
+
+        self.assertEqual(2, created.revision_no)
+        self.assertEqual(created.document_id, replayed.document_id)
+        self.assertEqual(2, replayed.revision_no)
+        self.assertEqual(created.vectorization_status, replayed.vectorization_status)
+        with open_connection() as connection:
+            documents = connection.execute(
+                """
+                SELECT id, revision_no, is_current, metadata
+                FROM documents
+                WHERE contract_id = %s AND document_type = 'CONTRACT'
+                ORDER BY revision_no
+                """,
+                (self.contract_id,),
+            ).fetchall()
+            changed_clause = connection.execute(
+                """
+                SELECT content, metadata
+                FROM document_chunks
+                WHERE document_id = %s
+                  AND chunk_type = 'CONTRACT_CLAUSE'
+                ORDER BY chunk_index
+                LIMIT 1
+                """,
+                (created.document_id,),
+            ).fetchone()
+
+        self.assertEqual([1, 2], [row["revision_no"] for row in documents])
+        self.assertEqual([False, True], [row["is_current"] for row in documents])
+        self.assertEqual(
+            str(self.review_run_id),
+            documents[1]["metadata"]["source_review_run_id"],
+        )
+        self.assertEqual(
+            str(self.document_id),
+            documents[1]["metadata"]["source_document_id"],
+        )
+        self.assertEqual(
+            str(client_request_id),
+            documents[1]["metadata"]["revision_client_request_id"],
+        )
+        self.assertEqual("合同标的验收合格后支付合同价款。", changed_clause["content"])
+        self.assertEqual(
+            str(self.finding_id),
+            changed_clause["metadata"]["revision_change"]["finding_id"],
+        )
+
+        different_request = request.model_copy(
+            update={"client_request_id": uuid4()}
+        )
+        with self.assertRaises(RiskReviewError) as raised:
+            service.create_revision(self.review_run_id, different_request)
+        self.assertEqual("REVISION_SOURCE_OUTDATED", raised.exception.code)
 
     def test_business_then_legal_approval_completes_contract(self) -> None:
         """业务通过后进入法务，法务通过后合同状态应为 APPROVED。"""

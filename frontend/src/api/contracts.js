@@ -130,6 +130,20 @@ export function getRiskReviewTrace(reviewRunId) {
   return request(`/api/v1/risk-reviews/${reviewRunId}/trace`)
 }
 
+export function generateContractRevisionDraft(reviewRunId) {
+  return request(`/api/v1/risk-reviews/${reviewRunId}/revision-draft`, {
+    method: 'POST',
+  })
+}
+
+export function createContractRevision(reviewRunId, payload) {
+  return request(`/api/v1/risk-reviews/${reviewRunId}/revisions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function createRiskChatSession(findingId) {
   return request(`/api/v1/risk-findings/${findingId}/chat-sessions`, {
     method: 'POST',

@@ -109,6 +109,12 @@ DRAFT -> PARSING -> READY -> REVIEWING -> PENDING_APPROVAL
 
 部分唯一索引保证同一合同只有一个当前版本，并且修订号不重复。
 
+风险整改确认复用现有修订结构，不新增“草案合同”表。生成草案阶段不落库；人工确认后创建
+下一条 `documents` 记录，并把旧版本的 `is_current` 设为 `FALSE`。新文档 `metadata`
+记录来源审查、来源文档、确认请求幂等键和已采用风险项；被修改或新增的
+`document_chunks.metadata.revision_change` 记录风险项、检查编码、操作类型和来源条款。
+这样既保留完整历史，也可以追溯某项合同内容为什么发生变化。
+
 #### `document_chunks` — 文档分块与向量
 
 | 关键字段 | 类型 | 说明 |

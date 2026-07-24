@@ -36,6 +36,8 @@
 | POST | `/api/v1/risk-reviews` | `application/json` | 创建四项异步风险审查 |
 | GET | `/api/v1/risk-reviews/{review_run_id}` | - | 查询审查进度、结论和证据 |
 | GET | `/api/v1/risk-reviews/{review_run_id}/trace` | - | 查询脱敏的 Agent 执行轨迹 |
+| POST | `/api/v1/risk-reviews/{review_run_id}/revision-draft` | - | 根据风险建议生成不落库的整合同修订草案 |
+| POST | `/api/v1/risk-reviews/{review_run_id}/revisions` | `application/json` | 人工确认采用修改并创建合同新修订版本 |
 | POST | `/api/v1/risk-findings/{finding_id}/chat-sessions` | - | 为风险项创建或恢复问答会话 |
 | GET | `/api/v1/chat-sessions/{session_id}` | - | 查询会话、历史消息和回答引用 |
 | POST | `/api/v1/chat-sessions/{session_id}/messages` | `application/json` | 继续询问风险并生成回答或条款草案 |
@@ -386,6 +388,84 @@ docker compose up -d postgres
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/003_risk_review_agent.sql
 docker compose exec postgres psql -U approval_user -d approval_assistant -f /migrations/005_policy_reranking.sql
 ```
+
+## 风险整改与合同新修订接口
+
+风险审查成功且报告对应合同当前版本时，前端在“审查汇总”区域展示“生成合同修订草案”入口。
+该功能形成以下闭环：
+
+1. 根据当次审查中状态为 `RISK` 或 `INSUFFICIENT_INFORMATION` 的风险项生成整合同草案；
+2. 用户逐项决定是否采用，并可编辑条款编号、标题和正文；
+3. 确认后保留未修改条款，创建同一 `contract_no` 的下一修订版本；
+4. 新版本事务提交后创建异步向量化任务；
+5. 向量化完成后，用户可以对新版本重新执行四项风险审查。
+
+原合同版本和原风险报告不会被覆盖。生成阶段不写数据库；只有确认接口会创建新版本。模型只能引用
+当次审查固定的合同条款、风险结论和已保存证据，`INSUFFICIENT_INFORMATION` 只能生成需要人工
+补充业务变量的中性条款，不得猜测金额、日期、地点或合同主体。
+
+### `POST /api/v1/risk-reviews/{review_run_id}/revision-draft`
+
+请求体为空。成功响应包含来源/目标版本和可编辑的 `changes`。其中：
+
+- `finding_id`、`check_code` 将修改绑定到真实风险项；
+- `action` 为 `REPLACE` 或 `ADD`；
+- `target_clause_id` 由后端把模型的受控 `C1`、`C2` 标签映射为真实条款 ID；
+- `original_content` 由后端回填，不能由模型伪造；
+- `warnings` 用于提示仍需人工确认的业务变量。
+
+```json
+{
+  "review_run_id": "11111111-1111-4111-8111-111111111111",
+  "source_document_id": "22222222-2222-4222-8222-222222222222",
+  "source_revision_no": 1,
+  "target_revision_no": 2,
+  "summary": "调整付款节点并补充质保约定。",
+  "changes": [
+    {
+      "finding_id": "33333333-3333-4333-8333-333333333333",
+      "check_code": "PAYMENT_TERMS",
+      "action": "REPLACE",
+      "target_clause_id": "44444444-4444-4444-8444-444444444444",
+      "original_content": "合同签订后支付全部价款。",
+      "proposed_clause_no": "第一条",
+      "proposed_title": "付款安排",
+      "proposed_content": "合同标的验收合格后支付合同价款。"
+    }
+  ]
+}
+```
+
+### `POST /api/v1/risk-reviews/{review_run_id}/revisions`
+
+前端只提交用户明确采用的修改；未出现在 `changes` 中的草案项不会写入新版本。
+
+```json
+{
+  "source_document_id": "22222222-2222-4222-8222-222222222222",
+  "client_request_id": "55555555-5555-4555-8555-555555555555",
+  "changes": [
+    {
+      "finding_id": "33333333-3333-4333-8333-333333333333",
+      "action": "REPLACE",
+      "target_clause_id": "44444444-4444-4444-8444-444444444444",
+      "proposed_clause_no": "第一条",
+      "proposed_title": "付款安排",
+      "proposed_content": "合同标的验收合格后支付合同价款。"
+    }
+  ]
+}
+```
+
+确认接口使用两个并发保护：
+
+- `source_document_id` 必须仍是合同当前版本，否则返回 `409 REVISION_SOURCE_OUTDATED`；
+- `client_request_id` 是幂等键。相同键、相同内容的网络重试返回第一次创建的版本，不会继续创建 V3；
+  相同键但内容不同返回 `409 REVISION_IDEMPOTENCY_CONFLICT`。
+
+新文档 `metadata` 会记录 `source_review_run_id`、`source_document_id`、
+`revision_client_request_id` 和采用的风险项 ID；修改条款的 `metadata.revision_change` 会记录
+风险项、检查编码、操作类型和来源条款 ID，供后续解释“这一条为什么被改”。
 
 ## 风险项多轮问答接口
 
