@@ -126,6 +126,10 @@ export function getRiskReview(reviewRunId) {
   return request(`/api/v1/risk-reviews/${reviewRunId}`)
 }
 
+export function getRiskReviewTrace(reviewRunId) {
+  return request(`/api/v1/risk-reviews/${reviewRunId}/trace`)
+}
+
 export function createRiskChatSession(findingId) {
   return request(`/api/v1/risk-findings/${findingId}/chat-sessions`, {
     method: 'POST',

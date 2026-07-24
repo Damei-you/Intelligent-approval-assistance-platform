@@ -157,6 +157,12 @@ Content-Type: application/json
 GET http://127.0.0.1:8000/api/v1/risk-reviews/请替换为review_run_id
 Accept: application/json
 
+### 查询脱敏的 Agent 执行轨迹
+# 返回主流程、四个并行分支、检索/补检、Rerank、耗时与 Token 摘要。
+# 不返回原始 Prompt、合同全文或 LangGraph 内部 input_data/output_data。
+GET http://127.0.0.1:8000/api/v1/risk-reviews/请替换为review_run_id/trace
+Accept: application/json
+
 ### 为风险项创建或恢复多轮问答会话
 # finding_id 来自风险审查详情中某一项 finding；会话会固定该风险项、审查任务和合同修订版本。
 POST {{baseUrl}}/api/v1/risk-findings/{{findingId}}/chat-sessions

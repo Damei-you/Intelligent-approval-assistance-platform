@@ -35,6 +35,7 @@
 | GET | `/api/v1/risk-reviews/contracts` | - | 查询可选择的当前合同版本 |
 | POST | `/api/v1/risk-reviews` | `application/json` | 创建四项异步风险审查 |
 | GET | `/api/v1/risk-reviews/{review_run_id}` | - | 查询审查进度、结论和证据 |
+| GET | `/api/v1/risk-reviews/{review_run_id}/trace` | - | 查询脱敏的 Agent 执行轨迹 |
 | POST | `/api/v1/risk-findings/{finding_id}/chat-sessions` | - | 为风险项创建或恢复问答会话 |
 | GET | `/api/v1/chat-sessions/{session_id}` | - | 查询会话、历史消息和回答引用 |
 | POST | `/api/v1/chat-sessions/{session_id}/messages` | `application/json` | 继续询问风险并生成回答或条款草案 |
@@ -344,6 +345,21 @@ Content-Type: application/json
 ```
 
 前端每 1.5 秒查询 `/api/v1/risk-reviews/{review_run_id}`。任务完成后响应包含总体风险、审批建议、四项检查结论及每项合同/制度证据。
+
+前端打开执行轨迹面板后，还会同步查询
+`GET /api/v1/risk-reviews/{review_run_id}/trace`。该接口按实际持久化记录返回：
+
+- 工作流名称、版本、状态和总耗时；
+- `load_context`、四个并行检查节点及 `aggregate` 节点的状态、起止时间和耗时；
+- 每个检查节点的条件路由、检索轮次、首次缺失来源、补检来源和最终证据数量；
+- 每轮合同/制度检索的查询、候选数、入选数、Embedding/Rerank 模型、阈值、重排耗时和降级状态；
+- 聊天模型名称、输入/输出 Token 和调用耗时。
+
+接口是面向演示页面的脱敏投影，不返回 `workflow_node_runs.input_data`、
+`workflow_node_runs.output_data`、原始 Prompt、模型结构化输出、合同全文或数据库内部过滤
+标识。工作流和节点失败时只返回稳定的用户提示，原始异常保留在服务日志和数据库记录中。
+四个检查节点的起止时间会被前端映射到同一时间轴，因此可以直观看到 LangGraph 的并行
+扇出、分支完成和最终汇合。
 
 `GET /api/v1/risk-reviews/contracts` 还会返回每份合同最近一次审查的
 `latest_review_run_id`、`latest_review_status`、`latest_review_created_at` 和

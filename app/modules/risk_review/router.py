@@ -14,6 +14,7 @@ from app.modules.risk_review.schemas import (
     RiskReviewCreateRequest,
     RiskReviewCreateResponse,
     RiskReviewDetail,
+    RiskReviewTrace,
 )
 from app.modules.risk_review.service import RiskReviewService
 
@@ -61,6 +62,21 @@ async def create_risk_review(
 async def get_risk_review(review_run_id: UUID) -> RiskReviewDetail:
     try:
         return await run_in_threadpool(repository.get_review_detail, review_run_id)
+    except RiskReviewError as exc:
+        return _error_response(exc)
+
+
+@router.get(
+    "/{review_run_id}/trace",
+    response_model=RiskReviewTrace,
+    summary="查询风险审查 Agent 的脱敏执行轨迹",
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_risk_review_trace(review_run_id: UUID) -> RiskReviewTrace:
+    """在线程池查询同步 psycopg 记录，并由 response_model 限定可展示字段。"""
+
+    try:
+        return await run_in_threadpool(repository.get_review_trace, review_run_id)
     except RiskReviewError as exc:
         return _error_response(exc)
 

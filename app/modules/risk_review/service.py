@@ -119,7 +119,9 @@ class ReviewModelProvider:
 
 {self.parser.get_format_instructions()}
 """.strip()
+        started_at = perf_counter()
         response = self.client.invoke(prompt)
+        latency_ms = round((perf_counter() - started_at) * 1000)
         content = response.content
         if not isinstance(content, str):
             content = str(content)
@@ -128,6 +130,7 @@ class ReviewModelProvider:
         return decision, {
             "input_tokens": usage.get("input_tokens"),
             "output_tokens": usage.get("output_tokens"),
+            "latency_ms": latency_ms,
         }
 
 
@@ -590,6 +593,7 @@ class RiskReviewService:
             decision.model_dump(),
             usage["input_tokens"],
             usage["output_tokens"],
+            usage.get("latency_ms"),
         )
 
         selected_contract = _select_references(decision.contract_refs, contract_chunks, "C")

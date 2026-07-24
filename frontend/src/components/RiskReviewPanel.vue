@@ -1,15 +1,20 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
+  Activity,
   AlertTriangle,
   ArrowRight,
   BookOpen,
   Bot,
   Check,
   CheckCircle2,
+  ChevronDown,
   CircleAlert,
+  Clock3,
+  Cpu,
   FileText,
   FileSearch,
+  GitBranch,
   LoaderCircle,
   MessageCircle,
   RefreshCw,
@@ -25,6 +30,7 @@ import {
   createRiskReview,
   getRiskChatSession,
   getRiskReview,
+  getRiskReviewTrace,
   listReviewContracts,
   sendRiskChatMessage,
 } from '../api/contracts'
@@ -39,6 +45,10 @@ const CHECKS = [
 const contracts = ref([])
 const selectedContractId = ref('')
 const review = ref(null)
+const trace = ref(null)
+const traceOpen = ref(false)
+const traceLoading = ref(false)
+const traceError = ref('')
 const loadingContracts = ref(false)
 const starting = ref(false)
 const errorMessage = ref('')
@@ -57,6 +67,7 @@ let pollingTimer = null
 let chatPollingTimer = null
 let chatOpenSequence = 0
 let reviewRequestSequence = 0
+let traceRequestSequence = 0
 let chatTriggerElement = null
 let bodyScrollLocked = false
 let previousBodyOverflow = ''
@@ -88,6 +99,20 @@ const selectedContract = computed(() => (
 const isRunning = computed(() => ['PENDING', 'RUNNING'].includes(review.value?.status))
 const riskCount = computed(() => review.value?.findings?.filter((item) => item.status === 'RISK').length || 0)
 const insufficientCount = computed(() => review.value?.findings?.filter((item) => item.status === 'INSUFFICIENT_INFORMATION').length || 0)
+const traceBranchNodes = computed(() => CHECKS.map((check) => ({
+  ...check,
+  node: trace.value?.nodes?.find((node) => node.node_name === check.code.toLowerCase()) || null,
+})))
+const traceStats = computed(() => {
+  const branches = traceBranchNodes.value.map((item) => item.node).filter(Boolean)
+  const modelCalls = branches.flatMap((node) => node.model_calls || [])
+  return {
+    completed: branches.filter((node) => node.status === 'SUCCEEDED').length,
+    retries: branches.filter((node) => Number(node.retrieval_attempts || 0) > 1).length,
+    modelCalls: modelCalls.length,
+    tokens: modelCalls.reduce((total, call) => total + Number(call.total_tokens || 0), 0),
+  }
+})
 const chatMessages = computed(() => chatSession.value?.messages || [])
 const chatFinding = computed(() => chatSession.value?.finding || activeChatFinding.value || {})
 const chatHasPending = computed(() => (
@@ -109,6 +134,7 @@ onBeforeUnmount(() => {
 })
 watch(selectedContractId, () => {
   closeChat()
+  resetTrace()
   loadLatestReview()
 })
 
@@ -158,6 +184,7 @@ async function startReview() {
   stopPolling()
   starting.value = true
   review.value = null
+  resetTrace()
   errorMessage.value = ''
   try {
     const created = await createRiskReview(contractId)
@@ -168,6 +195,7 @@ async function startReview() {
       contract.latest_review_status = 'PENDING'
       contract.latest_review_is_current = true
     }
+    traceOpen.value = true
     await refreshReview(created.review_run_id, contractId, sequence)
     if (
       sequence === reviewRequestSequence
@@ -195,11 +223,60 @@ async function refreshReview(
     const loadedReview = await getRiskReview(reviewRunId)
     if (sequence !== reviewRequestSequence || contractId !== selectedContractId.value) return
     review.value = loadedReview
+    if (traceOpen.value) {
+      await refreshTrace(reviewRunId, contractId, sequence, true)
+    }
     if (!['PENDING', 'RUNNING'].includes(loadedReview.status)) stopPolling()
   } catch (error) {
     if (sequence !== reviewRequestSequence || contractId !== selectedContractId.value) return
     stopPolling()
     errorMessage.value = error.message || '审查进度查询失败。'
+  }
+}
+
+function resetTrace() {
+  traceRequestSequence += 1
+  trace.value = null
+  traceOpen.value = false
+  traceLoading.value = false
+  traceError.value = ''
+}
+
+async function toggleTrace() {
+  if (!review.value?.review_run_id) return
+  traceOpen.value = !traceOpen.value
+  if (traceOpen.value) {
+    await refreshTrace()
+  }
+}
+
+async function refreshTrace(
+  reviewRunId = review.value?.review_run_id,
+  contractId = selectedContractId.value,
+  reviewSequence = reviewRequestSequence,
+  silent = false,
+) {
+  if (!reviewRunId) return
+  const requestSequence = ++traceRequestSequence
+  if (!silent) traceLoading.value = true
+  traceError.value = ''
+  try {
+    const loadedTrace = await getRiskReviewTrace(reviewRunId)
+    if (
+      requestSequence !== traceRequestSequence
+      || reviewSequence !== reviewRequestSequence
+      || contractId !== selectedContractId.value
+    ) return
+    trace.value = loadedTrace
+  } catch (error) {
+    if (
+      requestSequence !== traceRequestSequence
+      || reviewSequence !== reviewRequestSequence
+      || contractId !== selectedContractId.value
+    ) return
+    traceError.value = error.message || '执行轨迹加载失败。'
+  } finally {
+    if (requestSequence === traceRequestSequence) traceLoading.value = false
   }
 }
 
@@ -526,6 +603,69 @@ function candidatesFor(finding, evidenceType) {
 function formatSimilarity(value) {
   return Number(value || 0).toFixed(4)
 }
+
+function traceNode(name) {
+  return trace.value?.nodes?.find((node) => node.node_name === name) || null
+}
+
+function traceStatusText(status) {
+  return {
+    PENDING: '等待执行',
+    RUNNING: '执行中',
+    SUCCEEDED: '已完成',
+    FAILED: '执行失败',
+    SKIPPED: '已跳过',
+  }[status] || '等待执行'
+}
+
+function traceRouteText(route) {
+  return {
+    MODEL_JUDGMENT: '证据充分 → 模型判断',
+    INSUFFICIENT_INFORMATION: '补检后证据不足 → 确定性结束',
+  }[route] || '等待路由'
+}
+
+function traceSourceText(source) {
+  return source === 'POLICY' ? '制度依据' : '合同条款'
+}
+
+function traceSourcesText(sources) {
+  if (!sources?.length) return '无'
+  return sources.map(traceSourceText).join('、')
+}
+
+function rankingStrategyText(strategy) {
+  return {
+    VECTOR: '向量排序',
+    RERANK: '向量召回 + Rerank',
+    RERANK_FALLBACK: 'Rerank 降级',
+  }[strategy] || strategy
+}
+
+function formatDuration(value) {
+  if (value === null || value === undefined) return '—'
+  if (value < 1000) return `${value} ms`
+  return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`
+}
+
+function traceTimelineStyle(node) {
+  if (!node?.started_at || !trace.value?.started_at) return { left: '0%', width: '3%' }
+  const workflowStart = new Date(trace.value.started_at).getTime()
+  const nodeStart = new Date(node.started_at).getTime()
+  const total = Math.max(
+    Number(trace.value.total_latency_ms || 0),
+    Date.now() - workflowStart,
+    1,
+  )
+  const latency = Math.max(
+    Number(node.latency_ms || 0),
+    node.completed_at ? new Date(node.completed_at).getTime() - nodeStart : Date.now() - nodeStart,
+    1,
+  )
+  const left = Math.max(0, Math.min(97, ((nodeStart - workflowStart) / total) * 100))
+  const width = Math.max(3, Math.min(100 - left, (latency / total) * 100))
+  return { left: `${left}%`, width: `${width}%` }
+}
 </script>
 
 <template>
@@ -544,6 +684,18 @@ function formatSimilarity(value) {
       <div class="launch-copy">
         <span class="section-index">01</span>
         <div><h2>选择待审查合同</h2><p>审查固定使用所选合同的当前修订版本。</p></div>
+        <button
+          v-if="review"
+          class="trace-toggle-button"
+          type="button"
+          :aria-expanded="traceOpen"
+          aria-controls="agent-execution-trace"
+          @click="toggleTrace"
+        >
+          <Activity :size="16" />
+          {{ traceOpen ? '收起执行轨迹' : '查看执行轨迹' }}
+          <ChevronDown :size="14" :class="{ rotated: traceOpen }" />
+        </button>
       </div>
       <div class="contract-picker-row">
         <label class="contract-select">
@@ -569,6 +721,163 @@ function formatSimilarity(value) {
       </div>
       <div v-if="errorMessage" class="review-error"><CircleAlert :size="18" />{{ errorMessage }}<button type="button" @click="loadContracts"><RefreshCw :size="14" />重试</button></div>
       <div v-if="review" class="review-progress"><i :style="{ width: `${review.progress}%` }"></i></div>
+    </section>
+
+    <section
+      v-if="review && traceOpen"
+      id="agent-execution-trace"
+      class="agent-trace-panel"
+      aria-live="polite"
+    >
+      <header class="trace-header">
+        <div class="trace-heading-icon"><Activity :size="19" /></div>
+        <div>
+          <span>AGENT EXECUTION TRACE</span>
+          <h2>风险检查执行轨迹</h2>
+          <p>展示 LangGraph 主流程、四项并行分支、证据补检与模型调用摘要。</p>
+        </div>
+        <span class="trace-run-status" :class="trace?.status?.toLowerCase()">
+          <LoaderCircle v-if="trace?.status === 'RUNNING' || trace?.status === 'PENDING'" class="spinner" :size="13" />
+          <CheckCircle2 v-else-if="trace?.status === 'SUCCEEDED'" :size="13" />
+          <CircleAlert v-else :size="13" />
+          {{ traceStatusText(trace?.status) }}
+        </span>
+        <button class="trace-refresh-button" type="button" :disabled="traceLoading" aria-label="刷新执行轨迹" @click="refreshTrace()">
+          <RefreshCw :class="{ spinner: traceLoading }" :size="15" />
+        </button>
+      </header>
+
+      <div v-if="traceLoading && !trace" class="trace-state">
+        <LoaderCircle class="spinner" :size="20" />
+        正在读取执行轨迹…
+      </div>
+      <div v-else-if="traceError && !trace" class="trace-state error">
+        <CircleAlert :size="18" />{{ traceError }}
+      </div>
+
+      <template v-if="trace">
+        <div class="trace-stats">
+          <div><strong>{{ traceStats.completed }}/4</strong><span>并行分支完成</span></div>
+          <div><strong>{{ traceStats.retries }}</strong><span>触发证据补检</span></div>
+          <div><strong>{{ traceStats.modelCalls }}</strong><span>模型判断调用</span></div>
+          <div><strong>{{ traceStats.tokens || '—' }}</strong><span>累计 Token</span></div>
+          <div><strong>{{ formatDuration(trace.total_latency_ms) }}</strong><span>工作流总耗时</span></div>
+        </div>
+
+        <div class="trace-flow">
+          <div class="trace-stage" :class="traceNode('load_context')?.status?.toLowerCase()">
+            <span class="trace-stage-icon"><FileText :size="17" /></span>
+            <div>
+              <small>01 · CONTEXT</small>
+              <strong>加载合同上下文</strong>
+              <p>固定合同修订版本并准备四项检查输入</p>
+            </div>
+            <em>{{ traceStatusText(traceNode('load_context')?.status) }}</em>
+            <time><Clock3 :size="12" />{{ formatDuration(traceNode('load_context')?.latency_ms) }}</time>
+          </div>
+
+          <div class="trace-flow-connector"><i></i><span><GitBranch :size="13" />并行扇出 4 个检查分支</span><i></i></div>
+
+          <div class="trace-branch-grid">
+            <details
+              v-for="(item, index) in traceBranchNodes"
+              :key="item.code"
+              class="trace-branch"
+              :class="[item.node?.status?.toLowerCase(), item.node?.finding_status?.toLowerCase()]"
+              :open="item.node?.status === 'RUNNING'"
+            >
+              <summary>
+                <span class="trace-branch-number">
+                  <LoaderCircle v-if="item.node?.status === 'RUNNING'" class="spinner" :size="14" />
+                  <Check v-else-if="item.node?.status === 'SUCCEEDED'" :size="14" />
+                  <b v-else>{{ index + 1 }}</b>
+                </span>
+                <span class="trace-branch-title">
+                  <small>并行分支 {{ index + 1 }}</small>
+                  <strong>{{ item.name }}</strong>
+                </span>
+                <span class="trace-branch-result">
+                  <b>{{ traceStatusText(item.node?.status) }}</b>
+                  <small v-if="item.node?.finding_status">{{ statusText(item.node.finding_status) }} · {{ riskText(item.node.severity) }}</small>
+                </span>
+                <ChevronDown class="trace-chevron" :size="15" />
+                <span class="trace-timebar" aria-hidden="true"><i :style="traceTimelineStyle(item.node)"></i></span>
+              </summary>
+
+              <div v-if="item.node" class="trace-branch-detail">
+                <div class="trace-route-row">
+                  <span><GitBranch :size="14" /><b>{{ traceRouteText(item.node.route) }}</b></span>
+                  <span><Clock3 :size="13" />{{ formatDuration(item.node.latency_ms) }}</span>
+                  <span>检索 {{ item.node.retrieval_attempts || 0 }} 轮</span>
+                </div>
+                <div v-if="item.node.retried_sources?.length" class="trace-retry-note">
+                  <RefreshCw :size="13" />
+                  首次缺少 {{ traceSourcesText(item.node.initial_missing_sources) }}，仅对
+                  {{ traceSourcesText(item.node.retried_sources) }} 执行一次补检。
+                </div>
+
+                <div v-if="item.node.retrievals?.length" class="trace-retrieval-list">
+                  <article
+                    v-for="(retrieval, retrievalIndex) in item.node.retrievals"
+                    :key="`${item.code}-${retrieval.source}-${retrieval.retrieval_attempt}-${retrievalIndex}`"
+                    :class="{ fallback: retrieval.ranking_strategy === 'RERANK_FALLBACK' }"
+                  >
+                    <header>
+                      <span>{{ traceSourceText(retrieval.source) }}</span>
+                      <b>{{ retrieval.retrieval_attempt === 2 ? '补检' : '首次检索' }}</b>
+                      <em>{{ rankingStrategyText(retrieval.ranking_strategy) }}</em>
+                      <strong>{{ retrieval.candidate_count }} 候选 → {{ retrieval.selected_count }} 入选</strong>
+                    </header>
+                    <p>{{ retrieval.query_text }}</p>
+                    <footer>
+                      <span>Embedding：{{ retrieval.query_embedding_model || '—' }}</span>
+                      <span v-if="retrieval.rerank_model">Rerank：{{ retrieval.rerank_model }}</span>
+                      <span v-if="retrieval.applied_threshold !== null">阈值 ≥ {{ formatSimilarity(retrieval.applied_threshold) }}</span>
+                      <span v-if="retrieval.query_score !== null">查询分 {{ formatSimilarity(retrieval.query_score) }}</span>
+                      <span v-if="retrieval.rerank_latency_ms !== null">{{ formatDuration(retrieval.rerank_latency_ms) }}</span>
+                    </footer>
+                    <div v-if="retrieval.fallback_reason" class="trace-fallback-note">
+                      <AlertTriangle :size="12" />{{ retrieval.fallback_reason }}
+                    </div>
+                  </article>
+                </div>
+
+                <div v-if="item.node.model_calls?.length" class="trace-model-calls">
+                  <div v-for="(call, callIndex) in item.node.model_calls" :key="`${item.code}-model-${callIndex}`">
+                    <Cpu :size="15" />
+                    <span><small>结构化风险判断</small><b>{{ call.model_name }}</b></span>
+                    <em>{{ call.total_tokens ?? '—' }} Token</em>
+                    <em>{{ formatDuration(call.latency_ms) }}</em>
+                  </div>
+                </div>
+                <div v-else-if="item.node.route === 'INSUFFICIENT_INFORMATION'" class="trace-no-model">
+                  <CircleAlert :size="13" />补检后证据仍不足，本分支未调用聊天模型。
+                </div>
+              </div>
+              <div v-else class="trace-branch-detail empty">等待 Worker 创建并执行该分支。</div>
+            </details>
+          </div>
+
+          <div class="trace-flow-connector merge"><i></i><span>等待四个分支完成后汇合</span><i></i></div>
+
+          <div class="trace-stage aggregate" :class="traceNode('aggregate')?.status?.toLowerCase()">
+            <span class="trace-stage-icon"><ShieldAlert :size="17" /></span>
+            <div>
+              <small>06 · AGGREGATE</small>
+              <strong>汇总审查结论</strong>
+              <p>由确定性规则计算总体风险与审批辅助建议</p>
+            </div>
+            <em>{{ traceStatusText(traceNode('aggregate')?.status) }}</em>
+            <time><Clock3 :size="12" />{{ formatDuration(traceNode('aggregate')?.latency_ms) }}</time>
+          </div>
+        </div>
+
+        <footer class="trace-privacy-note">
+          <ShieldAlert :size="14" />
+          轨迹仅展示脱敏运行摘要；原始 Prompt、合同全文和内部状态不会通过本接口返回。
+          <span>{{ trace.graph_name }} · v{{ trace.graph_version || '1.0' }}</span>
+        </footer>
+      </template>
     </section>
 
     <section class="review-dashboard">
@@ -824,12 +1133,25 @@ function formatSimilarity(value) {
 .review-launch-card, .review-dashboard { border: 1px solid #d5ddd6; background: rgba(252,253,250,.9); box-shadow: 0 22px 60px rgba(31,52,42,.06); }
 .review-launch-card { padding: 24px 28px; border-radius: 18px; }
 .launch-copy, .review-section-heading > div, .summary-title { display: flex; align-items: center; gap: 13px; }.launch-copy h2, .review-section-heading h2, .summary-title h2 { margin: 0; color: var(--navy); font-size: 16px; }.launch-copy p, .summary-title p { margin: 3px 0 0; color: #89938d; font-size: 9px; }
+.trace-toggle-button { margin-left: auto; padding: 8px 10px; display: flex; align-items: center; gap: 6px; border: 1px solid #b9cec0; border-radius: 8px; color: var(--green); background: #f4f8f4; font-size: 9px; font-weight: 700; cursor: pointer; }.trace-toggle-button:hover { border-color: #7fab8e; background: #eaf3ec; }.trace-toggle-button svg:last-child { transition: transform .2s ease; }.trace-toggle-button svg.rotated { transform: rotate(180deg); }
 .contract-picker-row { margin-top: 18px; display: grid; grid-template-columns: minmax(300px, 1fr) auto auto; align-items: end; gap: 13px; }
 .contract-select { display: flex; flex-direction: column; gap: 7px; }.contract-select span { color: #52625a; font-size: 10px; font-weight: 700; }.contract-select select { width: 100%; padding: 12px 13px; border: 1px solid #d4dcd5; border-radius: 9px; outline: 0; color: var(--navy); background: white; font-size: 11px; }
 .contract-readiness { height: 39px; padding: 0 12px; display: flex; align-items: center; gap: 7px; border-radius: 9px; color: #926837; background: #f7eddb; font-size: 9px; }.contract-readiness.ready { color: var(--green); background: #e3efe7; }
 .review-start-button { height: 39px; padding: 0 17px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 9px; color: white; background: var(--green); font-size: 10px; font-weight: 700; }.review-start-button:disabled { cursor: not-allowed; opacity: .52; }
 .review-error { margin-top: 14px; padding: 10px 12px; display: flex; align-items: center; gap: 8px; border-radius: 8px; color: #9b403b; background: #fae9e7; font-size: 10px; }.review-error button { margin-left: auto; display: flex; gap: 4px; border: 0; color: inherit; background: transparent; }
 .review-progress { height: 4px; margin: 18px -28px -24px; overflow: hidden; border-radius: 0 0 18px 18px; background: #e7ece8; }.review-progress i { height: 100%; display: block; background: var(--green); transition: width .35s ease; }
+.agent-trace-panel { margin-top: 18px; padding: 22px 24px; border: 1px solid #cfdad1; border-radius: 18px; background: rgba(247,250,247,.96); box-shadow: 0 18px 48px rgba(31,52,42,.06); }
+.trace-header { display: flex; align-items: center; gap: 11px; }.trace-heading-icon { width: 36px; height: 36px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 10px; color: white; background: var(--green); }.trace-header > div:nth-child(2) { min-width: 0; flex: 1; }.trace-header span { color: #789083; font-size: 7px; font-weight: 700; letter-spacing: .09em; }.trace-header h2 { margin: 2px 0 0; color: var(--navy); font-size: 15px; }.trace-header p { margin: 3px 0 0; color: #7e8b84; font-size: 9px; }
+.trace-run-status { padding: 6px 8px; display: flex; align-items: center; gap: 5px; border-radius: 7px; color: #806428 !important; background: #f6ebcc; font-size: 8px !important; letter-spacing: 0 !important; }.trace-run-status.succeeded { color: var(--green) !important; background: #e2efe6; }.trace-run-status.failed { color: #a74740 !important; background: #fae8e6; }.trace-refresh-button { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #d6dfd7; border-radius: 8px; color: #708078; background: white; cursor: pointer; }.trace-refresh-button:disabled { cursor: wait; opacity: .5; }
+.trace-state { min-height: 110px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #78877f; font-size: 10px; }.trace-state.error { color: #a84b44; }
+.trace-stats { margin-top: 18px; display: grid; grid-template-columns: repeat(5, 1fr); overflow: hidden; border: 1px solid #d9e1da; border-radius: 10px; background: white; }.trace-stats div { padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; }.trace-stats div + div { border-left: 1px solid #e2e8e3; }.trace-stats strong { color: var(--navy); font-size: 12px; }.trace-stats span { color: #89938d; font-size: 7px; }
+.trace-flow { margin-top: 16px; }.trace-stage { min-height: 54px; padding: 10px 13px; display: flex; align-items: center; gap: 10px; border: 1px solid #d9e2da; border-radius: 10px; background: white; }.trace-stage-icon { width: 31px; height: 31px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 8px; color: #71837a; background: #edf2ee; }.trace-stage > div { min-width: 0; flex: 1; }.trace-stage small { color: #91a097; font-size: 7px; font-weight: 700; letter-spacing: .07em; }.trace-stage strong { margin-top: 2px; display: block; color: var(--navy); font-size: 10px; }.trace-stage p { margin: 3px 0 0; color: #869189; font-size: 8px; }.trace-stage > em { padding: 4px 7px; border-radius: 6px; color: #806428; background: #f6ebcc; font-size: 7px; font-style: normal; font-weight: 700; }.trace-stage > time { min-width: 62px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; color: #87938c; font-size: 8px; }.trace-stage.succeeded { border-color: #bcd3c3; }.trace-stage.succeeded .trace-stage-icon { color: white; background: var(--green); }.trace-stage.succeeded > em { color: var(--green); background: #e2efe6; }.trace-stage.running { border-color: #dbc986; box-shadow: 0 0 0 2px rgba(208,170,71,.09); }.trace-stage.failed { border-color: #e0b4b0; }.trace-stage.aggregate { background: #f2f7f3; }
+.trace-flow-connector { height: 34px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 9px; color: #789084; }.trace-flow-connector i { height: 1px; background: #d7e1d8; }.trace-flow-connector span { display: flex; align-items: center; gap: 5px; font-size: 7px; font-weight: 700; }.trace-flow-connector.merge { color: #8a958e; }
+.trace-branch-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.trace-branch { overflow: hidden; border: 1px solid #dbe3dc; border-radius: 10px; background: white; }.trace-branch[open] { grid-column: span 2; border-color: #adc6b5; box-shadow: 0 8px 24px rgba(35,61,45,.06); }.trace-branch summary { position: relative; min-height: 62px; padding: 11px 12px 14px; display: flex; align-items: center; gap: 9px; cursor: pointer; list-style: none; }.trace-branch summary::-webkit-details-marker { display: none; }.trace-branch-number { width: 27px; height: 27px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 50%; color: #77867e; background: #eaf0eb; }.trace-branch-number b { font-size: 8px; }.trace-branch.succeeded .trace-branch-number { color: white; background: var(--green); }.trace-branch.risk .trace-branch-number { background: #b94e46; }.trace-branch.insufficient_information .trace-branch-number { color: #7c5d1a; background: #eed998; }.trace-branch-title { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }.trace-branch-title small { color: #95a098; font-size: 7px; }.trace-branch-title strong { color: var(--navy); font-size: 10px; }.trace-branch-result { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }.trace-branch-result b { color: #5c6f63; font-size: 8px; }.trace-branch-result small { color: #87928b; font-size: 7px; }.trace-chevron { flex: 0 0 auto; color: #8b9890; transition: transform .2s ease; }.trace-branch[open] .trace-chevron { transform: rotate(180deg); }.trace-timebar { position: absolute; right: 12px; bottom: 7px; left: 48px; height: 3px; overflow: hidden; border-radius: 3px; background: #edf1ed; }.trace-timebar i { position: absolute; top: 0; height: 100%; border-radius: inherit; background: #7cad8c; transition: left .3s ease, width .3s ease; }.trace-branch.running .trace-timebar i { background: #d0a83f; }
+.trace-branch-detail { padding: 12px; border-top: 1px solid #e2e8e3; background: #f8faf8; }.trace-branch-detail.empty { color: #89948d; font-size: 8px; }.trace-route-row { display: flex; align-items: center; gap: 12px; color: #748178; font-size: 8px; }.trace-route-row span { display: flex; align-items: center; gap: 5px; }.trace-route-row span:first-child { margin-right: auto; color: var(--green); }.trace-retry-note, .trace-no-model { margin-top: 9px; padding: 8px 9px; display: flex; align-items: center; gap: 6px; border-radius: 7px; color: #806426; background: #fbf3dc; font-size: 8px; }.trace-no-model { color: #7b5f27; }
+.trace-retrieval-list { margin-top: 9px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }.trace-retrieval-list article { padding: 9px; overflow: hidden; border: 1px solid #dfe6df; border-radius: 8px; background: white; }.trace-retrieval-list article.fallback { border-color: #e4cf9d; background: #fffdf7; }.trace-retrieval-list header { display: flex; align-items: center; gap: 5px; }.trace-retrieval-list header span, .trace-retrieval-list header b, .trace-retrieval-list header em { padding: 3px 5px; border-radius: 5px; font-size: 7px; font-style: normal; }.trace-retrieval-list header span { color: white; background: var(--green); }.trace-retrieval-list header b { color: #765c20; background: #f3e6bd; }.trace-retrieval-list header em { color: #65776d; background: #edf2ee; }.trace-retrieval-list header strong { margin-left: auto; color: var(--navy); font-size: 8px; }.trace-retrieval-list article > p { margin: 7px 0; overflow: hidden; color: #5f6e66; font-size: 8px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }.trace-retrieval-list footer { display: flex; flex-wrap: wrap; gap: 4px 8px; color: #8a958e; font-size: 7px; }.trace-fallback-note { margin-top: 7px; padding-top: 6px; display: flex; align-items: center; gap: 5px; border-top: 1px solid #eee0bc; color: #8a6928; font-size: 7px; }
+.trace-model-calls { margin-top: 9px; }.trace-model-calls > div { padding: 8px 9px; display: flex; align-items: center; gap: 7px; border: 1px solid #d9e4db; border-radius: 8px; color: var(--green); background: #edf5ef; }.trace-model-calls span { display: flex; flex: 1; flex-direction: column; gap: 1px; }.trace-model-calls small { color: #839087; font-size: 7px; }.trace-model-calls b { color: var(--navy); font-size: 8px; }.trace-model-calls em { color: #6d7d74; font-size: 8px; font-style: normal; }
+.trace-privacy-note { margin-top: 14px; padding-top: 11px; display: flex; align-items: center; gap: 6px; border-top: 1px solid #dde5de; color: #839087; font-size: 8px; }.trace-privacy-note > svg { color: var(--green); }.trace-privacy-note span { margin-left: auto; color: #95a098; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 7px; }
 .review-dashboard { margin-top: 18px; display: grid; grid-template-columns: minmax(0, 1fr) 300px; border-radius: 18px; overflow: hidden; }.review-main-column { padding: 28px; }.review-section-heading { display: flex; justify-content: space-between; align-items: center; }.review-section-heading p { color: #8b958f; font-size: 9px; }
 .check-overview { margin-top: 20px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; }.check-step { padding: 12px; display: flex; align-items: center; gap: 9px; border: 1px solid #dde3dd; border-radius: 10px; background: #f7f9f6; }.check-number { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; color: #738078; background: #e7ece7; }.check-number b { font-size: 9px; }.check-step > div { display: flex; flex-direction: column; gap: 3px; }.check-step strong { color: var(--navy); font-size: 10px; }.check-step small { color: #879189; font-size: 8px; }.check-step.pass .check-number { color: white; background: var(--green); }.check-step.risk .check-number { color: white; background: #bb5148; }.check-step.insufficient_information .check-number { color: #8b681c; background: #f2dc9e; }
 .finding-list { margin-top: 18px; display: flex; flex-direction: column; gap: 13px; }.finding-card { padding: 18px; border: 1px solid #dde3dd; border-left: 4px solid #bdc8c0; border-radius: 12px; background: white; }.finding-card.risk { border-left-color: #bd5149; }.finding-card.pass { border-left-color: var(--green); }.finding-card.insufficient_information { border-left-color: #d3a83e; }
@@ -854,6 +1176,6 @@ function formatSimilarity(value) {
 .message-citations { width: 100%; margin-top: 8px; border: 1px solid #dce5de; border-radius: 8px; background: #f7f9f7; }.message-citations summary { padding: 8px 10px; display: flex; align-items: center; gap: 6px; color: var(--green); font-size: 8px; font-weight: 700; cursor: pointer; list-style: none; }.message-citations summary::-webkit-details-marker { display: none; }.message-citations blockquote { margin: 0 8px 8px; padding: 9px; border: 1px solid #e0e6e1; border-radius: 7px; background: white; }.message-citations blockquote header { display: flex; align-items: center; gap: 5px; }.message-citations blockquote header b { padding: 2px 5px; border-radius: 5px; color: white; background: var(--green); font-size: 7px; }.message-citations blockquote header span { color: #809087; font-size: 7px; }.message-citations blockquote > strong { margin-top: 5px; display: block; color: #3f5549; font-size: 8px; }.message-citations blockquote p { margin: 5px 0 0; color: #66736c; font-size: 8px; line-height: 1.55; }.assistant-thinking { margin: 2px 0 10px 39px; display: flex; align-items: center; gap: 6px; color: #71837a; font-size: 9px; }
 .chat-inline-error { padding: 8px 22px; display: flex; align-items: center; gap: 6px; border-top: 1px solid #efcbc8; color: #9b403b; background: #fff2f0; font-size: 9px; }
 .chat-composer { padding: 12px 18px 15px; border-top: 1px solid #d8e1da; background: white; }.chat-composer > label { margin-bottom: 7px; display: flex; align-items: center; gap: 7px; }.chat-composer > label span { color: #7c8881; font-size: 8px; font-weight: 700; }.chat-composer select { padding: 4px 7px; border: 1px solid #d5dfd7; border-radius: 6px; outline: none; color: #4b5f54; background: #f8faf8; font-size: 8px; }.composer-input { display: flex; align-items: flex-end; gap: 8px; }.composer-input textarea { min-height: 58px; max-height: 130px; padding: 10px 11px; flex: 1; resize: vertical; border: 1px solid #cfdad1; border-radius: 10px; outline: none; color: var(--navy); background: #fbfcfb; font-family: inherit; font-size: 10px; line-height: 1.55; }.composer-input textarea:focus { border-color: #82ad91; box-shadow: 0 0 0 3px rgba(59, 111, 77, .09); }.composer-input textarea:disabled { cursor: not-allowed; opacity: .6; }.composer-input button { width: 39px; height: 39px; display: grid; flex: 0 0 auto; place-items: center; border: 0; border-radius: 9px; color: white; background: var(--green); cursor: pointer; }.composer-input button:disabled { cursor: not-allowed; opacity: .45; }.chat-composer > p { margin: 6px 2px 0; color: #929c96; font-size: 7px; }
-@media (max-width: 980px) { .review-hero-row { align-items: flex-start; flex-direction: column; }.review-dashboard { grid-template-columns: 1fr; }.review-summary { border-left: 0; border-top: 1px solid #d8dfd8; }.contract-picker-row { grid-template-columns: 1fr 1fr; }.contract-select { grid-column: 1 / -1; } }
-@media (max-width: 680px) { .review-page { width: min(100% - 24px, 1360px); }.review-hero { padding-top: 38px; }.review-hero h1 { font-size: 26px; }.review-launch-card, .review-main-column, .review-summary { padding: 20px 17px; }.contract-picker-row, .check-overview, .evidence-grid, .candidate-grid { grid-template-columns: 1fr; }.review-start-button, .contract-readiness { width: 100%; }.review-section-heading { align-items: flex-start; flex-direction: column; }.finding-header { align-items: flex-start; flex-wrap: wrap; }.finding-badges { margin-left: 45px; }.finding-chat-entry { align-items: stretch; flex-direction: column; }.finding-chat-entry button { justify-content: center; }.chat-header { padding: calc(15px + env(safe-area-inset-top)) 15px 15px; }.chat-context-strip { padding: 9px 15px; }.chat-quick-actions { padding: 9px 15px; grid-template-columns: 1fr; }.chat-quick-actions button { align-items: center; }.chat-quick-actions small { display: none; }.chat-messages { padding: 16px 14px; }.chat-composer { padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); }.chat-composer select, .composer-input textarea { font-size: 16px; }.draft-comparison { grid-template-columns: 1fr; }.draft-comparison > div + div { border-top: 1px solid #e0e6e1; border-left: 0; } }
+@media (max-width: 980px) { .review-hero-row { align-items: flex-start; flex-direction: column; }.review-dashboard { grid-template-columns: 1fr; }.review-summary { border-left: 0; border-top: 1px solid #d8dfd8; }.contract-picker-row { grid-template-columns: 1fr 1fr; }.contract-select { grid-column: 1 / -1; }.trace-stats { grid-template-columns: repeat(3, 1fr); }.trace-stats div + div { border-left: 0; }.trace-stats div:not(:nth-child(3n + 1)) { border-left: 1px solid #e2e8e3; }.trace-stats div:nth-child(n + 4) { border-top: 1px solid #e2e8e3; } }
+@media (max-width: 680px) { .review-page { width: min(100% - 24px, 1360px); }.review-hero { padding-top: 38px; }.review-hero h1 { font-size: 26px; }.review-launch-card, .review-main-column, .review-summary { padding: 20px 17px; }.launch-copy { align-items: flex-start; flex-wrap: wrap; }.trace-toggle-button { width: 100%; margin-left: 0; justify-content: center; }.contract-picker-row, .check-overview, .evidence-grid, .candidate-grid { grid-template-columns: 1fr; }.review-start-button, .contract-readiness { width: 100%; }.agent-trace-panel { padding: 18px 14px; }.trace-header { align-items: flex-start; flex-wrap: wrap; }.trace-run-status { margin-left: 47px; }.trace-stats { grid-template-columns: repeat(2, 1fr); }.trace-stats div:not(:nth-child(3n + 1)) { border-left: 0; }.trace-stats div:nth-child(even) { border-left: 1px solid #e2e8e3; }.trace-stats div:nth-child(n + 3) { border-top: 1px solid #e2e8e3; }.trace-branch-grid { grid-template-columns: 1fr; }.trace-branch[open] { grid-column: span 1; }.trace-branch-result { display: none; }.trace-retrieval-list { grid-template-columns: 1fr; }.trace-route-row { align-items: flex-start; flex-wrap: wrap; }.trace-route-row span:first-child { width: 100%; }.trace-privacy-note { align-items: flex-start; flex-wrap: wrap; }.trace-privacy-note span { width: 100%; margin-left: 20px; }.review-section-heading { align-items: flex-start; flex-direction: column; }.finding-header { align-items: flex-start; flex-wrap: wrap; }.finding-badges { margin-left: 45px; }.finding-chat-entry { align-items: stretch; flex-direction: column; }.finding-chat-entry button { justify-content: center; }.chat-header { padding: calc(15px + env(safe-area-inset-top)) 15px 15px; }.chat-context-strip { padding: 9px 15px; }.chat-quick-actions { padding: 9px 15px; grid-template-columns: 1fr; }.chat-quick-actions button { align-items: center; }.chat-quick-actions small { display: none; }.chat-messages { padding: 16px 14px; }.chat-composer { padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); }.chat-composer select, .composer-input textarea { font-size: 16px; }.draft-comparison { grid-template-columns: 1fr; }.draft-comparison > div + div { border-top: 1px solid #e0e6e1; border-left: 0; } }
 </style>

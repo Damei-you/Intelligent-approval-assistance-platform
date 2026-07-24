@@ -7,6 +7,7 @@ import unittest
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
+from psycopg.types.json import Jsonb
 
 from app.core.config import settings
 from app.core.database import open_connection
@@ -89,26 +90,69 @@ class ApprovalIntegrationTests(unittest.TestCase):
                     """
                     INSERT INTO workflow_runs (
                         id, run_type, review_run_id, graph_name,
-                        graph_version, status
-                    ) VALUES (%s, 'RISK_REVIEW', %s, 'contract_risk_review', '1.0', 'SUCCEEDED')
+                        graph_version, status, started_at, completed_at
+                    ) VALUES (
+                        %s, 'RISK_REVIEW', %s, 'contract_risk_review', '1.0',
+                        'SUCCEEDED', CURRENT_TIMESTAMP - INTERVAL '1 second',
+                        CURRENT_TIMESTAMP
+                    )
                     """,
                     (workflow_run_id, self.review_run_id),
                 )
                 connection.execute(
                     """
                     INSERT INTO workflow_node_runs (
-                        id, workflow_run_id, node_name, sequence_no, status
-                    ) VALUES (%s, %s, 'payment_terms', 1, 'SUCCEEDED')
+                        id, workflow_run_id, node_name, sequence_no, status,
+                        output_data, latency_ms, started_at, completed_at
+                    ) VALUES (
+                        %s, %s, 'payment_terms', 1, 'SUCCEEDED',
+                        %s, 850, CURRENT_TIMESTAMP - INTERVAL '900 milliseconds',
+                        CURRENT_TIMESTAMP - INTERVAL '50 milliseconds'
+                    )
                     """,
-                    (node_run_id, workflow_run_id),
+                    (
+                        node_run_id,
+                        workflow_run_id,
+                        Jsonb(
+                            {
+                                "status": "RISK",
+                                "severity": "MEDIUM",
+                                "route": "MODEL_JUDGMENT",
+                                "retrieval_attempts": 1,
+                                "initial_missing_sources": [],
+                                "retried_sources": [],
+                                "final_missing_sources": [],
+                                "contract_evidence_count": 1,
+                                "policy_evidence_count": 1,
+                            }
+                        ),
+                    ),
                 )
                 connection.execute(
                     """
                     INSERT INTO retrieval_runs (
-                        id, node_run_id, query_text, query_embedding_model, top_k
-                    ) VALUES (%s, %s, '付款条款', 'text-embedding-v4', 1)
+                        id, node_run_id, query_text, query_embedding_model,
+                        filters, top_k, final_top_k, ranking_strategy,
+                        rerank_model, rerank_latency_ms
+                    ) VALUES (
+                        %s, %s, '付款条款', 'text-embedding-v4', %s,
+                        1, 1, 'RERANK', 'qwen3-rerank', 35
+                    )
                     """,
-                    (retrieval_run_id, node_run_id),
+                    (
+                        retrieval_run_id,
+                        node_run_id,
+                        Jsonb(
+                            {
+                                "attempt": 1,
+                                "query_kind": "INITIAL",
+                                "chunk_type": "CONTRACT_CLAUSE",
+                                "query_min_score": 0.45,
+                                "query_score": 0.82,
+                                "confidence_band": "NORMAL",
+                            }
+                        ),
+                    ),
                 )
                 connection.execute(
                     """
@@ -118,6 +162,18 @@ class ApprovalIntegrationTests(unittest.TestCase):
                     ) VALUES (%s, %s, 1, 0.88, TRUE)
                     """,
                     (retrieval_run_id, chunk["id"]),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO llm_calls (
+                        node_run_id, provider, model_name, prompt_name,
+                        input_tokens, output_tokens, latency_ms, status
+                    ) VALUES (
+                        %s, 'DASHSCOPE', 'qwen-plus', 'risk_review_v1',
+                        120, 38, 210, 'SUCCEEDED'
+                    )
+                    """,
+                    (node_run_id,),
                 )
                 connection.execute(
                     """
@@ -288,6 +344,38 @@ class ApprovalIntegrationTests(unittest.TestCase):
         self.assertEqual(self.review_run_id, contract["latest_review_run_id"])
         self.assertEqual("SUCCEEDED", contract["latest_review_status"])
         self.assertTrue(contract["latest_review_is_current"])
+
+    def test_review_trace_exposes_sanitized_execution_summary(self) -> None:
+        """轨迹接口应返回节点、检索与模型指标，但不暴露原始输入和模型输出。"""
+
+        repository = RiskReviewRepository()
+        trace = repository.get_review_trace(self.review_run_id)
+
+        self.assertEqual("SUCCEEDED", trace.status)
+        self.assertEqual("contract_risk_review", trace.graph_name)
+        self.assertEqual(1, len(trace.nodes))
+        payment = trace.nodes[0]
+        self.assertEqual("付款条款检查", payment.display_name)
+        self.assertEqual("MODEL_JUDGMENT", payment.route)
+        self.assertEqual("RISK", payment.finding_status)
+        self.assertEqual(1, payment.retrieval_attempts)
+        self.assertEqual(1, payment.retrievals[0].candidate_count)
+        self.assertEqual(1, payment.retrievals[0].selected_count)
+        self.assertEqual("RERANK", payment.retrievals[0].ranking_strategy)
+        self.assertEqual(158, payment.model_calls[0].total_tokens)
+        self.assertEqual(210, payment.model_calls[0].latency_ms)
+
+        status_code, payload = asyncio.run(
+            _asgi_request(
+                "GET",
+                f"/api/v1/risk-reviews/{self.review_run_id}/trace",
+            )
+        )
+        self.assertEqual(200, status_code)
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("input_data", serialized)
+        self.assertNotIn("output_data", serialized)
+        self.assertNotIn("contract_refs", serialized)
 
 
 async def _asgi_request(

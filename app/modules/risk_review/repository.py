@@ -7,7 +7,11 @@ from psycopg.types.json import Jsonb
 
 from app.core.database import open_connection
 from app.modules.risk_review.exceptions import RiskReviewError
-from app.modules.risk_review.schemas import ModelRiskDecision, RiskReviewDetail
+from app.modules.risk_review.schemas import (
+    ModelRiskDecision,
+    RiskReviewDetail,
+    RiskReviewTrace,
+)
 
 
 REVIEW_CHECK_CODES = (
@@ -16,6 +20,15 @@ REVIEW_CHECK_CODES = (
     "BREACH_LIABILITY",
     "DISPUTE_RESOLUTION",
 )
+
+TRACE_NODE_LABELS = {
+    "load_context": "加载合同上下文",
+    "payment_terms": "付款条款检查",
+    "warranty": "质保条款检查",
+    "breach_liability": "违约责任检查",
+    "dispute_resolution": "争议解决检查",
+    "aggregate": "汇总审查结论",
+}
 
 
 class RiskReviewRepository:
@@ -394,6 +407,7 @@ class RiskReviewRepository:
         output_data: dict[str, Any],
         input_tokens: int | None,
         output_tokens: int | None,
+        latency_ms: int | None = None,
     ) -> None:
         with open_connection() as connection:
             with connection.transaction():
@@ -401,8 +415,12 @@ class RiskReviewRepository:
                     """
                     INSERT INTO llm_calls (
                         node_run_id, provider, model_name, prompt_name,
-                        input_summary, output_data, input_tokens, output_tokens, status
-                    ) VALUES (%s, 'DASHSCOPE', %s, 'risk_review_v1', %s, %s, %s, %s, 'SUCCEEDED')
+                        input_summary, output_data, input_tokens, output_tokens,
+                        latency_ms, status
+                    ) VALUES (
+                        %s, 'DASHSCOPE', %s, 'risk_review_v1', %s, %s,
+                        %s, %s, %s, 'SUCCEEDED'
+                    )
                     """,
                     (
                         node_run_id,
@@ -411,6 +429,7 @@ class RiskReviewRepository:
                         Jsonb(output_data),
                         input_tokens,
                         output_tokens,
+                        latency_ms,
                     ),
                 )
 
@@ -750,6 +769,208 @@ class RiskReviewRepository:
             for finding in findings
         ]
         return RiskReviewDetail.model_validate(payload)
+
+    def get_review_trace(self, review_run_id: UUID) -> RiskReviewTrace:
+        """把持久化执行记录整理为适合界面展示的脱敏轨迹。"""
+
+        with open_connection() as connection:
+            workflow = connection.execute(
+                """
+                SELECT
+                    workflow.review_run_id,
+                    workflow.status,
+                    workflow.graph_name,
+                    workflow.graph_version,
+                    workflow.started_at,
+                    workflow.completed_at,
+                    CASE
+                        WHEN workflow.started_at IS NULL THEN NULL
+                        ELSE (
+                            EXTRACT(
+                                EPOCH FROM (
+                                    COALESCE(workflow.completed_at, CURRENT_TIMESTAMP)
+                                    - workflow.started_at
+                                )
+                            ) * 1000
+                        )::INTEGER
+                    END AS total_latency_ms
+                FROM workflow_runs workflow
+                WHERE workflow.review_run_id = %s
+                  AND workflow.run_type = 'RISK_REVIEW'
+                ORDER BY workflow.created_at DESC
+                LIMIT 1
+                """,
+                (review_run_id,),
+            ).fetchone()
+            if workflow is None:
+                # 审查记录存在但工作流缺失同样按未找到处理，避免向前端泄露数据库结构状态。
+                raise RiskReviewError("REVIEW_TRACE_NOT_FOUND", "风险审查执行轨迹不存在。", 404)
+
+            node_rows = connection.execute(
+                """
+                SELECT
+                    node.id,
+                    node.node_name,
+                    node.sequence_no,
+                    node.status,
+                    node.output_data,
+                    node.started_at,
+                    node.completed_at,
+                    node.latency_ms
+                FROM workflow_node_runs node
+                JOIN workflow_runs workflow ON workflow.id = node.workflow_run_id
+                WHERE workflow.review_run_id = %s
+                  AND workflow.run_type = 'RISK_REVIEW'
+                ORDER BY node.sequence_no
+                """,
+                (review_run_id,),
+            ).fetchall()
+
+            retrieval_rows = connection.execute(
+                """
+                SELECT
+                    retrieval.node_run_id,
+                    retrieval.query_text,
+                    retrieval.query_embedding_model,
+                    retrieval.filters,
+                    retrieval.top_k,
+                    retrieval.final_top_k,
+                    retrieval.ranking_strategy,
+                    retrieval.rerank_model,
+                    retrieval.rerank_latency_ms,
+                    retrieval.rerank_error,
+                    retrieval.created_at,
+                    (
+                        SELECT COUNT(*)::INTEGER
+                        FROM retrieval_hits hit
+                        WHERE hit.retrieval_run_id = retrieval.id
+                    ) AS candidate_count,
+                    (
+                        SELECT COUNT(*)::INTEGER
+                        FROM retrieval_hits hit
+                        WHERE hit.retrieval_run_id = retrieval.id
+                          AND hit.selected_for_context = TRUE
+                    ) AS selected_count
+                FROM retrieval_runs retrieval
+                JOIN workflow_node_runs node ON node.id = retrieval.node_run_id
+                JOIN workflow_runs workflow ON workflow.id = node.workflow_run_id
+                WHERE workflow.review_run_id = %s
+                  AND workflow.run_type = 'RISK_REVIEW'
+                ORDER BY node.sequence_no, retrieval.created_at
+                """,
+                (review_run_id,),
+            ).fetchall()
+
+            model_rows = connection.execute(
+                """
+                SELECT
+                    call.node_run_id,
+                    call.provider,
+                    call.model_name,
+                    call.prompt_name,
+                    call.input_tokens,
+                    call.output_tokens,
+                    call.latency_ms,
+                    call.status,
+                    call.created_at
+                FROM llm_calls call
+                JOIN workflow_node_runs node ON node.id = call.node_run_id
+                JOIN workflow_runs workflow ON workflow.id = node.workflow_run_id
+                WHERE workflow.review_run_id = %s
+                  AND workflow.run_type = 'RISK_REVIEW'
+                ORDER BY node.sequence_no, call.created_at
+                """,
+                (review_run_id,),
+            ).fetchall()
+
+        retrievals_by_node: dict[UUID, list[dict[str, Any]]] = {}
+        for retrieval_row in retrieval_rows:
+            retrieval = dict(retrieval_row)
+            node_run_id = retrieval.pop("node_run_id")
+            filters = retrieval.pop("filters") or {}
+            is_contract = filters.get("chunk_type") == "CONTRACT_CLAUSE"
+            # 仅投影可解释性字段；document_id 等内部过滤条件不进入 API 响应。
+            retrieval.update(
+                {
+                    "source": "CONTRACT" if is_contract else "POLICY",
+                    "retrieval_attempt": int(filters.get("attempt", 1)),
+                    "query_kind": filters.get("query_kind", "INITIAL"),
+                    "applied_threshold": (
+                        filters.get("query_min_score")
+                        if is_contract
+                        else filters.get("candidate_min_score")
+                    ),
+                    "query_score": filters.get("query_score") if is_contract else None,
+                    "confidence_band": (
+                        filters.get("confidence_band") if is_contract else None
+                    ),
+                    "fallback_reason": (
+                        "重排序不可用，已降级为向量排序"
+                        if retrieval.pop("rerank_error") is not None
+                        else None
+                    ),
+                }
+            )
+            retrievals_by_node.setdefault(node_run_id, []).append(retrieval)
+
+        model_calls_by_node: dict[UUID, list[dict[str, Any]]] = {}
+        for model_row in model_rows:
+            model_call = dict(model_row)
+            node_run_id = model_call.pop("node_run_id")
+            token_values = [
+                model_call.get("input_tokens"),
+                model_call.get("output_tokens"),
+            ]
+            model_call["total_tokens"] = (
+                sum(value or 0 for value in token_values)
+                if any(value is not None for value in token_values)
+                else None
+            )
+            model_calls_by_node.setdefault(node_run_id, []).append(model_call)
+
+        nodes: list[dict[str, Any]] = []
+        for node_row in node_rows:
+            node = dict(node_row)
+            node_run_id = node.pop("id")
+            output = node.pop("output_data") or {}
+            nodes.append(
+                {
+                    **node,
+                    "display_name": TRACE_NODE_LABELS.get(
+                        node["node_name"], node["node_name"]
+                    ),
+                    # 失败原因只提供稳定的用户提示，原始异常留在日志和数据库中供开发排查。
+                    "error_message": (
+                        "节点执行失败，请查看服务日志。"
+                        if node["status"] == "FAILED"
+                        else None
+                    ),
+                    "route": output.get("route"),
+                    "finding_status": output.get("status"),
+                    "severity": output.get("severity"),
+                    "retrieval_attempts": output.get("retrieval_attempts"),
+                    "initial_missing_sources": output.get(
+                        "initial_missing_sources", []
+                    ),
+                    "retried_sources": output.get("retried_sources", []),
+                    "final_missing_sources": output.get("final_missing_sources", []),
+                    "contract_evidence_count": output.get(
+                        "contract_evidence_count"
+                    ),
+                    "policy_evidence_count": output.get("policy_evidence_count"),
+                    "retrievals": retrievals_by_node.get(node_run_id, []),
+                    "model_calls": model_calls_by_node.get(node_run_id, []),
+                }
+            )
+
+        workflow_payload = dict(workflow)
+        workflow_payload["error_message"] = (
+            "工作流执行失败，请查看服务日志。"
+            if workflow_payload["status"] == "FAILED"
+            else None
+        )
+        workflow_payload["nodes"] = nodes
+        return RiskReviewTrace.model_validate(workflow_payload)
 
 
 def _to_vector_literal(vector: list[float]) -> str:

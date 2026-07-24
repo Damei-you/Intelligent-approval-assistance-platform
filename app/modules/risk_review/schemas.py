@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 ReviewStatus = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+WorkflowNodeStatus = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "SKIPPED"]
 FindingStatus = Literal["PASS", "RISK", "INSUFFICIENT_INFORMATION"]
 RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
 
@@ -112,6 +113,80 @@ class RiskReviewDetail(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class RiskTraceRetrieval(BaseModel):
+    """单次证据检索的脱敏摘要，不返回候选正文或数据库内部过滤条件。"""
+
+    source: Literal["CONTRACT", "POLICY"]
+    retrieval_attempt: int = Field(ge=1, le=2)
+    query_kind: Literal["INITIAL", "SUPPLEMENTAL"]
+    query_text: str
+    query_embedding_model: str | None = None
+    top_k: int = Field(ge=0)
+    final_top_k: int | None = Field(default=None, ge=1)
+    candidate_count: int = Field(ge=0)
+    selected_count: int = Field(ge=0)
+    ranking_strategy: Literal["VECTOR", "RERANK", "RERANK_FALLBACK"]
+    rerank_model: str | None = None
+    rerank_latency_ms: int | None = Field(default=None, ge=0)
+    fallback_reason: str | None = None
+    applied_threshold: float | None = None
+    query_score: float | None = None
+    confidence_band: str | None = None
+    created_at: datetime
+
+
+class RiskTraceModelCall(BaseModel):
+    """模型调用的可观测性摘要，明确排除 Prompt 和结构化输出正文。"""
+
+    provider: str | None = None
+    model_name: str
+    prompt_name: str | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    latency_ms: int | None = Field(default=None, ge=0)
+    status: Literal["SUCCEEDED", "FAILED"]
+    created_at: datetime
+
+
+class RiskTraceNode(BaseModel):
+    """LangGraph 外层节点及其检索、模型调用摘要。"""
+
+    node_name: str
+    display_name: str
+    sequence_no: int = Field(ge=0)
+    status: WorkflowNodeStatus
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    latency_ms: int | None = Field(default=None, ge=0)
+    error_message: str | None = None
+    route: str | None = None
+    finding_status: FindingStatus | None = None
+    severity: RiskLevel | None = None
+    retrieval_attempts: int | None = Field(default=None, ge=0, le=2)
+    initial_missing_sources: list[str] = Field(default_factory=list)
+    retried_sources: list[str] = Field(default_factory=list)
+    final_missing_sources: list[str] = Field(default_factory=list)
+    contract_evidence_count: int | None = Field(default=None, ge=0)
+    policy_evidence_count: int | None = Field(default=None, ge=0)
+    retrievals: list[RiskTraceRetrieval] = Field(default_factory=list)
+    model_calls: list[RiskTraceModelCall] = Field(default_factory=list)
+
+
+class RiskReviewTrace(BaseModel):
+    """供前端展示的风险审查 Agent 执行轨迹。"""
+
+    review_run_id: UUID
+    status: ReviewStatus
+    graph_name: str
+    graph_version: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    total_latency_ms: int | None = Field(default=None, ge=0)
+    error_message: str | None = None
+    nodes: list[RiskTraceNode] = Field(default_factory=list)
 
 
 class ModelRiskDecision(BaseModel):
