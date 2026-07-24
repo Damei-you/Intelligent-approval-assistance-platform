@@ -151,6 +151,21 @@ class ContractImportDetail(BaseModel):
     created_at: datetime
 
 
+class DemoContractCleanupResponse(BaseModel):
+    """返回固定示例合同及其关联数据库记录的清理结果。"""
+
+    contract_no: str
+    deleted: bool
+    # Field 的下限约束保证接口不会返回负数，便于前端直接展示清理统计。
+    deleted_documents: int = Field(ge=0)
+    deleted_clauses: int = Field(ge=0)
+    deleted_reviews: int = Field(ge=0)
+    deleted_approvals: int = Field(ge=0)
+    deleted_chat_sessions: int = Field(ge=0)
+    deleted_async_jobs: int = Field(ge=0)
+    message: str
+
+
 class DocumentVectorizationStatus(BaseModel):
     document_id: UUID
     job_id: UUID | None = None

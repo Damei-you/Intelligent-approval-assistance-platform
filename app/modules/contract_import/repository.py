@@ -210,3 +210,162 @@ class ContractImportRepository:
         if row is None:
             raise ImportRecordNotFoundError(f"未找到文档 {document_id} 的导入记录。")
         return dict(row)
+
+    def delete_contract_data(self, contract_no: str) -> dict[str, Any]:
+        """按精确合同编号事务删除合同及全部数据库关联记录。"""
+
+        with open_connection() as connection:
+            # 合同主记录上的 FOR UPDATE 锁可避免清理期间并发创建新修订版本。
+            # transaction() 正常结束时提交，任一步失败都会回滚，防止只删除部分数据。
+            with connection.transaction():
+                contract = connection.execute(
+                    """
+                    SELECT id
+                    FROM contracts
+                    WHERE contract_no = %s
+                    FOR UPDATE
+                    """,
+                    (contract_no,),
+                ).fetchone()
+                if contract is None:
+                    return {
+                        "contract_no": contract_no,
+                        "deleted": False,
+                        "deleted_documents": 0,
+                        "deleted_clauses": 0,
+                        "deleted_reviews": 0,
+                        "deleted_approvals": 0,
+                        "deleted_chat_sessions": 0,
+                        "deleted_async_jobs": 0,
+                    }
+
+                contract_id = contract["id"]
+                document_rows = connection.execute(
+                    "SELECT id FROM documents WHERE contract_id = %s",
+                    (contract_id,),
+                ).fetchall()
+                review_rows = connection.execute(
+                    "SELECT id FROM review_runs WHERE contract_id = %s",
+                    (contract_id,),
+                ).fetchall()
+                counts = connection.execute(
+                    """
+                    SELECT
+                        (
+                            SELECT COUNT(*)::INTEGER
+                            FROM documents
+                            WHERE contract_id = %s
+                        ) AS deleted_documents,
+                        (
+                            SELECT COUNT(*)::INTEGER
+                            FROM document_chunks dc
+                            JOIN documents d ON d.id = dc.document_id
+                            WHERE d.contract_id = %s
+                        ) AS deleted_clauses,
+                        (
+                            SELECT COUNT(*)::INTEGER
+                            FROM review_runs
+                            WHERE contract_id = %s
+                        ) AS deleted_reviews,
+                        (
+                            SELECT COUNT(*)::INTEGER
+                            FROM approval_instances
+                            WHERE contract_id = %s
+                        ) AS deleted_approvals,
+                        (
+                            SELECT COUNT(*)::INTEGER
+                            FROM chat_sessions
+                            WHERE contract_id = %s
+                        ) AS deleted_chat_sessions
+                    """,
+                    (
+                        contract_id,
+                        contract_id,
+                        contract_id,
+                        contract_id,
+                        contract_id,
+                    ),
+                ).fetchone()
+
+                # async_jobs.resource_id 没有外键，数据库无法自动级联。
+                # 这里同时覆盖合同、所有文档及所有审查任务，避免清理后留下孤立任务记录。
+                resource_ids = [
+                    contract_id,
+                    *(row["id"] for row in document_rows),
+                    *(row["id"] for row in review_rows),
+                ]
+                deleted_jobs = connection.execute(
+                    """
+                    DELETE FROM async_jobs
+                    WHERE resource_id = ANY(%s::uuid[])
+                    RETURNING id
+                    """,
+                    (resource_ids,),
+                ).fetchall()
+
+                # 审批、问答和审查都同时引用合同、文档或风险项。先按业务层级显式删除，
+                # 可以避免 PostgreSQL 在级联删除 documents 时先遇到仍引用条款的证据外键。
+                connection.execute(
+                    "DELETE FROM approval_instances WHERE contract_id = %s",
+                    (contract_id,),
+                )
+                connection.execute(
+                    "DELETE FROM chat_sessions WHERE contract_id = %s",
+                    (contract_id,),
+                )
+                connection.execute(
+                    "DELETE FROM review_runs WHERE contract_id = %s",
+                    (contract_id,),
+                )
+
+                # 正常业务数据的条款引用已随问答和审查删除。以下三条继续清理可能存在的
+                # 跨流程历史引用，确保示例合同的条款和向量可以完整移除。
+                connection.execute(
+                    """
+                    DELETE FROM finding_evidence
+                    WHERE chunk_id IN (
+                        SELECT dc.id
+                        FROM document_chunks dc
+                        JOIN documents d ON d.id = dc.document_id
+                        WHERE d.contract_id = %s
+                    )
+                    """,
+                    (contract_id,),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM chat_message_citations
+                    WHERE chunk_id IN (
+                        SELECT dc.id
+                        FROM document_chunks dc
+                        JOIN documents d ON d.id = dc.document_id
+                        WHERE d.contract_id = %s
+                    )
+                    """,
+                    (contract_id,),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM retrieval_hits
+                    WHERE chunk_id IN (
+                        SELECT dc.id
+                        FROM document_chunks dc
+                        JOIN documents d ON d.id = dc.document_id
+                        WHERE d.contract_id = %s
+                    )
+                    """,
+                    (contract_id,),
+                )
+
+                # 剩余 documents 和 document_chunks 通过 contracts 的外键级联统一清理。
+                connection.execute(
+                    "DELETE FROM contracts WHERE id = %s",
+                    (contract_id,),
+                )
+
+                return {
+                    "contract_no": contract_no,
+                    "deleted": True,
+                    **dict(counts),
+                    "deleted_async_jobs": len(deleted_jobs),
+                }

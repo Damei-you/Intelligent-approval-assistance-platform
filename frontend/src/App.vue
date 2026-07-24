@@ -27,6 +27,7 @@ import {
 import {
   confirmContractFile,
   confirmPolicyFile,
+  deleteDemoContractData,
   getImportDetail,
   getPolicyImportDetail,
   getPolicyVectorizationStatus,
@@ -36,29 +37,9 @@ import {
   previewContractFile,
   previewPolicyFile,
 } from './api/contracts'
+import demoContract from './data/demo-contract-50-clauses.json'
 import RiskReviewPanel from './components/RiskReviewPanel.vue'
 import ApprovalPanel from './components/ApprovalPanel.vue'
-
-const contractSampleJson = `{
-  "contract_no": "CG-2026-001",
-  "name": "办公设备采购合同",
-  "contract_type_code": "PURCHASE",
-  "counterparty": "示例科技有限公司",
-  "amount": 120000,
-  "currency": "CNY",
-  "clauses": [
-    {
-      "clause_no": "第一条",
-      "title": "合同标的",
-      "content": "供应方按照采购清单提供办公设备。"
-    },
-    {
-      "clause_no": "第二条",
-      "title": "付款方式",
-      "content": "设备验收合格后十个工作日内付款。"
-    }
-  ]
-}`
 
 const policySampleJson = `{
   "policy_no": "ZD-CG-2026-001",
@@ -86,7 +67,10 @@ const activeMode = ref('file')
 const selectedFile = ref(null)
 const isDragging = ref(false)
 const isSubmitting = ref(false)
+const isClearingDemo = ref(false)
 const errorMessage = ref('')
+const demoActionMessage = ref('')
+const demoActionFailed = ref(false)
 const result = ref(null)
 const resultDetail = ref(null)
 const vectorization = ref(null)
@@ -94,7 +78,7 @@ const preview = ref(null)
 const previewJson = ref('')
 const copiedField = ref('')
 const fileInput = ref(null)
-const contractJsonText = ref(contractSampleJson)
+const contractJsonText = ref('')
 const policyJsonText = ref(policySampleJson)
 const jsonText = computed({
   get: () => resourceType.value === 'contract' ? contractJsonText.value : policyJsonText.value,
@@ -204,6 +188,53 @@ function switchMode(mode) {
   previewJson.value = ''
 }
 
+function useDemoContract() {
+  if (isPolicy.value || isSubmitting.value || isClearingDemo.value) return
+  stopVectorizationPolling()
+  activeMode.value = 'json'
+  contractJsonText.value = JSON.stringify(demoContract, null, 2)
+  demoActionMessage.value = '已载入 50 条款示例合同，确认后才会写入数据库。'
+  demoActionFailed.value = false
+  errorMessage.value = ''
+  result.value = null
+  resultDetail.value = null
+  vectorization.value = null
+  preview.value = null
+  previewJson.value = ''
+}
+
+async function clearDemoContract() {
+  if (isPolicy.value || isSubmitting.value || isClearingDemo.value) return
+  const confirmed = window.confirm(
+    '确定清空示例合同 EVAL-STRESS-001 吗？\n\n'
+    + '数据库中的合同、全部修订文档、50 条款向量、风险审查、审批、问答、工作流轨迹和异步任务记录都会永久删除。',
+  )
+  if (!confirmed) return
+
+  stopVectorizationPolling()
+  isClearingDemo.value = true
+  demoActionMessage.value = ''
+  demoActionFailed.value = false
+  errorMessage.value = ''
+  try {
+    const cleanup = await deleteDemoContractData()
+    contractJsonText.value = ''
+    selectedFile.value = null
+    result.value = null
+    resultDetail.value = null
+    vectorization.value = null
+    preview.value = null
+    previewJson.value = ''
+    if (fileInput.value) fileInput.value.value = ''
+    demoActionMessage.value = cleanup.message
+  } catch (error) {
+    demoActionFailed.value = true
+    demoActionMessage.value = error.message || '示例合同数据清理失败，请稍后重试。'
+  } finally {
+    isClearingDemo.value = false
+  }
+}
+
 function openFilePicker() {
   fileInput.value?.click()
 }
@@ -246,7 +277,7 @@ function removeFile() {
 }
 
 async function submitFile() {
-  if (!canSubmitFile.value || isSubmitting.value) return
+  if (!canSubmitFile.value || isSubmitting.value || isClearingDemo.value) return
   isSubmitting.value = true
   errorMessage.value = ''
   result.value = null
@@ -266,7 +297,7 @@ async function submitFile() {
 }
 
 async function confirmPreview() {
-  if (!preview.value || !selectedFile.value || isSubmitting.value) return
+  if (!preview.value || !selectedFile.value || isSubmitting.value || isClearingDemo.value) return
   isSubmitting.value = true
   errorMessage.value = ''
   try {
@@ -297,7 +328,7 @@ function backToSource() {
 
 async function submitJson() {
   stopVectorizationPolling()
-  if (isSubmitting.value) return
+  if (isSubmitting.value || isClearingDemo.value) return
   isSubmitting.value = true
   errorMessage.value = ''
   result.value = null
@@ -454,25 +485,47 @@ function formatBytes(size) {
             </div>
           </div>
 
-          <div class="mode-tabs" role="tablist" aria-label="导入方式">
-            <button
-              type="button"
-              role="tab"
-              :aria-selected="activeMode === 'file'"
-              :class="{ active: activeMode === 'file' }"
-              @click="switchMode('file')"
-            >
-              <Upload :size="17" /> 文件导入
-            </button>
-            <button
-              type="button"
-              role="tab"
-              :aria-selected="activeMode === 'json'"
-              :class="{ active: activeMode === 'json' }"
-              @click="switchMode('json')"
-            >
-              <Braces :size="17" /> JSON {{ itemLabel }}
-            </button>
+          <div class="import-mode-row">
+            <div class="mode-tabs" role="tablist" aria-label="导入方式">
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="activeMode === 'file'"
+                :class="{ active: activeMode === 'file' }"
+                @click="switchMode('file')"
+              >
+                <Upload :size="17" /> 文件导入
+              </button>
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="activeMode === 'json'"
+                :class="{ active: activeMode === 'json' }"
+                @click="switchMode('json')"
+              >
+                <Braces :size="17" /> JSON {{ itemLabel }}
+              </button>
+            </div>
+            <div v-if="!isPolicy" class="demo-contract-actions" aria-label="示例合同操作">
+              <button type="button" :disabled="isSubmitting || isClearingDemo" @click="useDemoContract">
+                <FileCheck2 :size="16" /> 一键使用示例合同
+              </button>
+              <button class="clear-demo" type="button" :disabled="isSubmitting || isClearingDemo" @click="clearDemoContract">
+                <LoaderCircle v-if="isClearingDemo" class="spinner" :size="16" />
+                <X v-else :size="16" />
+                {{ isClearingDemo ? '正在清空…' : '一键清空示例合同数据' }}
+              </button>
+            </div>
+          </div>
+          <div
+            v-if="!isPolicy && demoActionMessage"
+            class="demo-action-message"
+            :class="{ error: demoActionFailed }"
+            role="status"
+          >
+            <CircleAlert v-if="demoActionFailed" :size="16" />
+            <CheckCircle2 v-else :size="16" />
+            <span>{{ demoActionMessage }}</span>
           </div>
 
           <div v-if="activeMode === 'file'" class="mode-panel">

@@ -38,3 +38,8 @@ class PreviewFileMismatchError(ContractImportError):
 class ImportRecordNotFoundError(ContractImportError):
     status_code = 404
     code = "IMPORT_RECORD_NOT_FOUND"
+
+
+class DemoContractCleanupError(ContractImportError):
+    status_code = 500
+    code = "DEMO_CONTRACT_CLEANUP_ERROR"

@@ -31,6 +31,11 @@ Content-Type: application/json
   ]
 }
 
+### 永久清理固定的 50 条款示例合同及全部关联数据库记录
+# 仅删除合同编号 EVAL-STRESS-001；重复调用保持幂等，不接受任意合同编号。
+DELETE {{baseUrl}}/api/v1/contracts/imports/demo
+Accept: application/json
+
 ### TXT 文件解析预览（不会写数据库）
 POST http://127.0.0.1:8000/api/v1/contracts/imports/preview/file
 Content-Type: multipart/form-data; boundary=WebAppBoundary

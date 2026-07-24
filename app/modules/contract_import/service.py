@@ -15,6 +15,7 @@ from app.modules.contract_import.parsers import (
     split_text_into_clauses,
 )
 from app.modules.contract_import.exceptions import (
+    DemoContractCleanupError,
     DocumentParseError,
     PreviewFileMismatchError,
 )
@@ -25,6 +26,7 @@ from app.modules.contract_import.schemas import (
     ContractImportPreviewResponse,
     ContractImportResponse,
     ContractJsonImportRequest,
+    DemoContractCleanupResponse,
     ImportFormat,
     ParsedClause,
     ParsedContract,
@@ -34,6 +36,8 @@ from app.modules.vectorization.service import enqueue_document_vectorization
 
 class ContractImportService:
     """组织文件解析、人工确认和最终持久化的业务流程。"""
+
+    DEMO_CONTRACT_NO = "EVAL-STRESS-001"
 
     def __init__(self, repository: ContractImportRepository) -> None:
         self.repository = repository
@@ -141,6 +145,23 @@ class ContractImportService:
     def get_import_detail(self, document_id: str) -> ContractImportDetail:
         result = self.repository.get_import_detail(document_id)
         return ContractImportDetail.model_validate(result)
+
+    def delete_demo_contract(self) -> DemoContractCleanupResponse:
+        """只清理固定演示合同，禁止调用方指定任意业务合同编号。"""
+
+        try:
+            result = self.repository.delete_contract_data(self.DEMO_CONTRACT_NO)
+        except Exception as exc:
+            # 数据库错误统一转换为不包含 SQL、连接串或合同正文的稳定 API 错误。
+            raise DemoContractCleanupError("示例合同数据清理失败，请稍后重试。") from exc
+        if result["deleted"]:
+            result["message"] = (
+                "示例合同及其文档、条款、风险审查、审批、问答、"
+                "工作流轨迹和异步任务记录已全部清理。"
+            )
+        else:
+            result["message"] = "数据库中没有需要清理的示例合同数据。"
+        return DemoContractCleanupResponse.model_validate(result)
 
     def _build_import_response(self, result: dict[str, object]) -> ContractImportResponse:
         """在导入事务提交后创建异步向量任务，并合并为接口响应。"""

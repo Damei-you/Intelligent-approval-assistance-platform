@@ -23,6 +23,7 @@ from app.modules.contract_import.schemas import (
     ContractImportPreviewResponse,
     ContractImportResponse,
     ContractJsonImportRequest,
+    DemoContractCleanupResponse,
     DocumentVectorizationStatus,
     ErrorResponse,
 )
@@ -148,6 +149,24 @@ async def import_contract_json(
     try:
         return await run_in_threadpool(service.import_json, payload)
     except ContractImportError as exc:
+        return _import_error_response(exc)
+
+
+@router.delete(
+    "/demo",
+    response_model=DemoContractCleanupResponse,
+    status_code=status.HTTP_200_OK,
+    summary="清理固定的 50 条款示例合同及全部关联数据",
+    responses={500: {"model": ErrorResponse}},
+)
+async def delete_demo_contract() -> DemoContractCleanupResponse:
+    """删除固定示例合同，路由不接收合同编号以避免误删其他合同。"""
+
+    try:
+        # psycopg 是同步数据库驱动，在线程池中执行事务，避免阻塞 FastAPI 事件循环。
+        return await run_in_threadpool(service.delete_demo_contract)
+    except ContractImportError as exc:
+        # 清理失败仍遵循统一的 code/message 错误结构，不向前端暴露数据库细节。
         return _import_error_response(exc)
 
 

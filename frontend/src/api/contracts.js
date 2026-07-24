@@ -28,6 +28,12 @@ export function importJsonContract(payload) {
   })
 }
 
+export function deleteDemoContractData() {
+  return request('/api/v1/contracts/imports/demo', {
+    method: 'DELETE',
+  })
+}
+
 export function previewContractFile(file, metadata) {
   const formData = new FormData()
   formData.append('file', file)

@@ -24,6 +24,7 @@
 | POST | `/api/v1/contracts/imports/preview/file` | `multipart/form-data` | 解析 PDF、TXT 或 JSON，返回待确认 JSON |
 | POST | `/api/v1/contracts/imports/confirm/file` | `multipart/form-data` | 提交确认后的 JSON 并正式入库 |
 | POST | `/api/v1/contracts/imports/json` | `application/json` | 直接提交结构化条款 |
+| DELETE | `/api/v1/contracts/imports/demo` | - | 清理固定 50 条款示例合同及全部关联数据 |
 | GET | `/api/v1/contracts/imports/{document_id}` | - | 查询导入记录及向量化数量 |
 | GET | `/api/v1/contracts/imports/{document_id}/vectorization` | - | 查询向量化任务状态和进度 |
 | POST | `/api/v1/policies/imports/preview/file` | `multipart/form-data` | 解析制度文件并返回待确认 JSON |
@@ -148,7 +149,42 @@ Content-Type: application/json
 
 `vectorized` 表示同步响应产生时是否已完成向量化，因此当前固定为 `false`。后续状态通过向量化进度接口查询。未配置 `api-key` 时，`vectorization_job_id` 为 `null`，状态为 `NOT_CONFIGURED`。
 
-## 5. 查询导入结果
+## 5. 清理固定示例合同
+
+```http
+DELETE /api/v1/contracts/imports/demo
+```
+
+此接口仅用于公开演示环境，删除目标在后端固定为 `EVAL-STRESS-001`，不接受合同编号参数，
+因此不能通过该接口删除其他合同。清理操作在一个数据库事务中完成，包含：
+
+- 合同主记录及所有修订文档；
+- 合同条款和 1536 维向量；
+- 风险审查、风险项、引用依据和 LangGraph 执行轨迹；
+- 合同风险问答、消息、引用和条款草案；
+- 业务、法务审批实例及审批步骤；
+- 文档向量化与风险审查的 `async_jobs` 记录。
+
+接口是幂等的：合同不存在时仍返回 HTTP `200 OK`，但 `deleted` 为 `false`。成功清理示例：
+
+```json
+{
+  "contract_no": "EVAL-STRESS-001",
+  "deleted": true,
+  "deleted_documents": 1,
+  "deleted_clauses": 50,
+  "deleted_reviews": 1,
+  "deleted_approvals": 1,
+  "deleted_chat_sessions": 1,
+  "deleted_async_jobs": 2,
+  "message": "示例合同及其文档、条款、风险审查、审批、问答、工作流轨迹和异步任务记录已全部清理。"
+}
+```
+
+前端必须在调用前展示明确的永久删除确认。该接口不提供任意合同删除能力，也不应扩展为传入
+`contract_no` 的通用删除接口。
+
+## 6. 查询导入结果
 
 ```http
 GET /api/v1/contracts/imports/{document_id}
@@ -163,7 +199,7 @@ GET /api/v1/contracts/imports/{document_id}
 | `revision_no` | 当前导入生成的合同文档修订号 |
 | `is_current` | 是否为该合同的当前版本 |
 
-## 6. 查询向量化进度
+## 7. 查询向量化进度
 
 ```http
 GET /api/v1/contracts/imports/{document_id}/vectorization
@@ -185,7 +221,7 @@ GET /api/v1/contracts/imports/{document_id}/vectorization
 
 状态包括 `NOT_CONFIGURED`、`NOT_STARTED`、`QUEUED`、`RUNNING`、`RETRYING`、`SUCCEEDED`、`FAILED` 和 `CANCELLED`。任务按最多 10 条条款分批调用模型，并在每批写入后更新进度。
 
-## 7. 制度依据导入
+## 8. 制度依据导入
 
 PDF/TXT 制度预览需提供以下表单字段：
 
@@ -220,7 +256,7 @@ PDF/TXT 制度预览需提供以下表单字段：
 
 同一 `policy_no` 再次导入时创建新的制度文档修订版本，并把旧版本标记为非当前版本。向量仍统一写入 `document_chunks.embedding`。
 
-## 8. 错误响应
+## 9. 错误响应
 
 ```json
 {
@@ -237,10 +273,11 @@ PDF/TXT 制度预览需提供以下表单字段：
 | 422 | `DOCUMENT_PARSE_ERROR` | 内容解析或元数据校验失败 |
 | 422 | `CONTRACT_TYPE_NOT_FOUND` | 合同类型不存在或未启用 |
 | 404 | `IMPORT_RECORD_NOT_FOUND` | 查询的文档不存在 |
+| 500 | `DEMO_CONTRACT_CLEANUP_ERROR` | 示例合同数据库事务清理失败 |
 
 FastAPI 自身的请求体校验错误仍使用标准 `422` 响应。
 
-## 9. 本地运行
+## 10. 本地运行
 
 ```powershell
 docker compose up -d postgres redis
@@ -260,7 +297,7 @@ docker compose up -d postgres redis
 - OpenAPI JSON：`http://127.0.0.1:8000/openapi.json`
 - 健康检查：`http://127.0.0.1:8000/health`
 
-## 10. 风险审查智能体
+## 11. 风险审查智能体
 
 风险审查固定执行付款、质保、违约责任和争议解决四项检查。LangGraph 在加载合同上下文后并行扇出四个检查节点，等待四项全部结束后再执行汇总。每项检查完成以下步骤：
 

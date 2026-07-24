@@ -43,34 +43,16 @@ class ContractImportIntegrationTests(unittest.TestCase):
             self.original_api_key,
         )
         with open_connection() as connection:
-            with connection.transaction():
-                document_ids = connection.execute(
-                    """
-                    SELECT d.id
-                    FROM documents d
-                    JOIN contracts c ON c.id = d.contract_id
-                    WHERE c.contract_no = %s
-                    """,
-                    (self.contract_no,),
-                ).fetchall()
-                stored_files = connection.execute(
-                    """
-                    SELECT d.storage_uri
-                    FROM documents d
-                    JOIN contracts c ON c.id = d.contract_id
-                    WHERE c.contract_no = %s AND d.storage_uri IS NOT NULL
-                    """,
-                    (self.contract_no,),
-                ).fetchall()
-                for row in document_ids:
-                    connection.execute(
-                        "DELETE FROM async_jobs WHERE resource_id = %s",
-                        (row["id"],),
-                    )
-                connection.execute(
-                    "DELETE FROM contracts WHERE contract_no = %s",
-                    (self.contract_no,),
-                )
+            stored_files = connection.execute(
+                """
+                SELECT d.storage_uri
+                FROM documents d
+                JOIN contracts c ON c.id = d.contract_id
+                WHERE c.contract_no = %s AND d.storage_uri IS NOT NULL
+                """,
+                (self.contract_no,),
+            ).fetchall()
+        ContractImportRepository().delete_contract_data(self.contract_no)
         for row in stored_files:
             candidate = (PROJECT_ROOT / row["storage_uri"]).resolve()
             if candidate.is_relative_to(settings.upload_dir.resolve()):
@@ -216,6 +198,203 @@ class ContractImportIntegrationTests(unittest.TestCase):
 
         self.assertEqual(2, detail.clause_count)
         self.assertEqual(0, detail.vectorized_clause_count)
+
+    def test_delete_contract_data_cascades_all_business_records(self) -> None:
+        """清理测试自身创建的合同，并验证无外键记录或异步任务残留。"""
+
+        repository = ContractImportRepository()
+        service = ContractImportService(repository)
+        result = service.import_json(
+            ContractJsonImportRequest(
+                contract_no=self.contract_no,
+                name="待清理的集成测试合同",
+                contract_type_code="PURCHASE",
+                clauses=[
+                    {"clause_no": "第一条", "content": "验收后付款。"},
+                    {"clause_no": "第二条", "content": "供应方负责交付。"},
+                ],
+            )
+        )
+        document_job = VectorizationRepository().create_job(result.document_id)
+        review_run_id = uuid4()
+        finding_id = uuid4()
+        approval_id = uuid4()
+        chat_session_id = uuid4()
+        chat_message_id = uuid4()
+        workflow_run_id = uuid4()
+        node_run_id = uuid4()
+        retrieval_run_id = uuid4()
+        review_job_id = uuid4()
+
+        with open_connection() as connection:
+            with connection.transaction():
+                chunk = connection.execute(
+                    """
+                    SELECT id
+                    FROM document_chunks
+                    WHERE document_id = %s
+                    ORDER BY chunk_index
+                    LIMIT 1
+                    """,
+                    (result.document_id,),
+                ).fetchone()
+                check_item = connection.execute(
+                    """
+                    SELECT id
+                    FROM review_check_items
+                    WHERE enabled = TRUE
+                    ORDER BY sort_order
+                    LIMIT 1
+                    """
+                ).fetchone()
+                connection.execute(
+                    """
+                    INSERT INTO review_runs (
+                        id, contract_id, contract_document_id, status,
+                        overall_risk_level, summary, approval_suggestion
+                    )
+                    VALUES (%s, %s, %s, 'SUCCEEDED', 'LOW', '测试摘要', 'APPROVE')
+                    """,
+                    (review_run_id, result.contract_id, result.document_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO risk_findings (
+                        id, review_run_id, check_item_id, status, severity,
+                        title, description
+                    )
+                    VALUES (%s, %s, %s, 'PASS', 'LOW', '测试结论', '测试说明')
+                    """,
+                    (finding_id, review_run_id, check_item["id"]),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO finding_evidence (
+                        finding_id, chunk_id, evidence_type, cited_text
+                    )
+                    VALUES (%s, %s, 'CONTRACT', '验收后付款。')
+                    """,
+                    (finding_id, chunk["id"]),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO approval_instances (
+                        id, contract_id, review_run_id, status
+                    )
+                    VALUES (%s, %s, %s, 'IN_PROGRESS')
+                    """,
+                    (approval_id, result.contract_id, review_run_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO approval_steps (
+                        approval_instance_id, step_no, step_type, step_name, status
+                    )
+                    VALUES (%s, 1, 'BUSINESS', '业务审批', 'IN_PROGRESS')
+                    """,
+                    (approval_id,),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_sessions (
+                        id, contract_id, review_run_id, finding_id,
+                        contract_document_id, title
+                    )
+                    VALUES (%s, %s, %s, %s, %s, '测试问答')
+                    """,
+                    (
+                        chat_session_id,
+                        result.contract_id,
+                        review_run_id,
+                        finding_id,
+                        result.document_id,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_messages (
+                        id, session_id, role, content, status
+                    )
+                    VALUES (%s, %s, 'ASSISTANT', '测试回答', 'SUCCEEDED')
+                    """,
+                    (chat_message_id, chat_session_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO chat_message_citations (
+                        message_id, chunk_id, cited_text
+                    )
+                    VALUES (%s, %s, '验收后付款。')
+                    """,
+                    (chat_message_id, chunk["id"]),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workflow_runs (
+                        id, run_type, review_run_id, graph_name, status
+                    )
+                    VALUES (%s, 'RISK_REVIEW', %s, 'cleanup_test', 'SUCCEEDED')
+                    """,
+                    (workflow_run_id, review_run_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workflow_node_runs (
+                        id, workflow_run_id, node_name, sequence_no, status
+                    )
+                    VALUES (%s, %s, 'cleanup_node', 0, 'SUCCEEDED')
+                    """,
+                    (node_run_id, workflow_run_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO retrieval_runs (
+                        id, node_run_id, query_text, top_k
+                    )
+                    VALUES (%s, %s, '测试查询', 1)
+                    """,
+                    (retrieval_run_id, node_run_id),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO retrieval_hits (
+                        retrieval_run_id, chunk_id, rank_no, similarity_score
+                    )
+                    VALUES (%s, %s, 1, 0.9)
+                    """,
+                    (retrieval_run_id, chunk["id"]),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO async_jobs (
+                        id, celery_task_id, task_type, resource_type,
+                        resource_id, status
+                    )
+                    VALUES (%s, %s, 'RISK_REVIEW', 'REVIEW_RUN', %s, 'SUCCEEDED')
+                    """,
+                    (review_job_id, str(uuid4()), review_run_id),
+                )
+
+        cleanup = repository.delete_contract_data(self.contract_no)
+
+        self.assertTrue(cleanup["deleted"])
+        self.assertEqual(1, cleanup["deleted_documents"])
+        self.assertEqual(2, cleanup["deleted_clauses"])
+        self.assertEqual(1, cleanup["deleted_reviews"])
+        self.assertEqual(1, cleanup["deleted_approvals"])
+        self.assertEqual(1, cleanup["deleted_chat_sessions"])
+        self.assertEqual(2, cleanup["deleted_async_jobs"])
+        with open_connection() as connection:
+            contract_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM contracts WHERE contract_no = %s",
+                (self.contract_no,),
+            ).fetchone()["count"]
+            remaining_jobs = connection.execute(
+                "SELECT COUNT(*) AS count FROM async_jobs WHERE id IN (%s, %s)",
+                (document_job["job_id"], review_job_id),
+            ).fetchone()["count"]
+        self.assertEqual(0, contract_count)
+        self.assertEqual(0, remaining_jobs)
 
 
 async def _asgi_request(
