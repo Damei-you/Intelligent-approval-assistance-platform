@@ -20,10 +20,6 @@ async function request(path, options = {}) {
   return payload
 }
 
-export function checkHealth() {
-  return request('/health')
-}
-
 export function importJsonContract(payload) {
   return request('/api/v1/contracts/imports/json', {
     method: 'POST',

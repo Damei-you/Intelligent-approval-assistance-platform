@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import {
   ArrowRight,
   BookOpen,
@@ -25,7 +25,6 @@ import {
   X,
 } from '@lucide/vue'
 import {
-  checkHealth,
   confirmContractFile,
   confirmPolicyFile,
   getImportDetail,
@@ -94,7 +93,6 @@ const vectorization = ref(null)
 const preview = ref(null)
 const previewJson = ref('')
 const copiedField = ref('')
-const healthStatus = ref('checking')
 const fileInput = ref(null)
 const contractJsonText = ref(contractSampleJson)
 const policyJsonText = ref(policySampleJson)
@@ -170,15 +168,6 @@ const vectorizationDetail = computed(() => {
   if (status === 'SUCCEEDED') return '1536 维向量已写入'
   if (status === 'FAILED') return '任务执行失败'
   return '确认导入后执行'
-})
-
-onMounted(async () => {
-  try {
-    await checkHealth()
-    healthStatus.value = 'online'
-  } catch {
-    healthStatus.value = 'offline'
-  }
 })
 
 onBeforeUnmount(stopVectorizationPolling)
@@ -408,12 +397,7 @@ function formatBytes(size) {
         <button type="button" :class="{ active: appSection === 'approval' }" @click="switchAppSection('approval')">辅助审批</button>
       </nav>
       <div class="topbar-actions">
-        <div class="api-status" :class="healthStatus">
-          <span class="status-dot"></span>
-          <span>{{ healthStatus === 'online' ? 'API 已连接' : healthStatus === 'offline' ? 'API 未连接' : '正在连接' }}</span>
-        </div>
         <div class="demo-badge">演示环境</div>
-        <button class="avatar" type="button" aria-label="演示用户">DE</button>
       </div>
     </header>
 
